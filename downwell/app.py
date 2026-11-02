@@ -1,6 +1,6 @@
 """Downwell Cloud: private browser-based YouTube downloader."""
 from __future__ import annotations
-import os, re, secrets, shutil, threading, time, uuid
+import os, re, secrets, shutil, threading, time, uuid, subprocess
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 from flask import Flask, request, jsonify, render_template_string, send_file, abort, redirect, session
@@ -151,6 +151,11 @@ DIRECT = """<!doctype html><html lang="en"><head><meta charset="UTF-8">
 <div class="panel">
 {% if not job %}
 <form action="/direct/download" method="post">
+<div style="padding:15px 18px;border:1px solid #4c6248;background:#baff820b;border-radius:12px;margin-bottom:24px">
+<label style="display:flex;gap:10px;align-items:start;font-size:14px;line-height:1.5">
+<input type="checkbox" name="relay" value="yes" checked style="margin-top:4px">
+<span><strong>Try community relay when YouTube blocks this server</strong>
+<span style="display:block;color:#abb8ac;margin-top:5px">Uses a public Invidious instance operated by a third party. Your video ID is shared with that service; no YouTube account or cookies are shared. Limited to 150 MB.</span></span></label></div>
 <p class="eyebrow">YOUTUBE VIDEO OR SHORTS LINK</p>
 <input type="url" name="url" required maxlength="2048" autocomplete="off"
 placeholder="https://www.youtube.com/watch?v=..." value="{{ form.get('url','') }}"
@@ -215,7 +220,7 @@ def direct_download():
     key=uuid.uuid4().hex
     with guard:
         jobs[key]={"created":time.time(),"status":"queued","progress":0,"message":"Preparing..."}
-    threading.Thread(target=worker,args=(key,url,kind,quality,video_id,video_id,client),daemon=True).start()
+    threading.Thread(target=worker,args=(key,url,kind,quality,video_id,video_id,client,form.get('relay')=='yes'),daemon=True).start()
     return redirect("/direct/status/"+key,code=303)
 
 @app.get("/direct/status/<key>")
@@ -356,10 +361,113 @@ def info():
                    duration=data.get("duration"),client=selected,
                    thumbnail="https://i.ytimg.com/vi/"+video_id+"/hqdefault.jpg")
 
-def worker(key,url,kind,quality,video_id,title,client):
+
+RELAY_ORIGIN = "https://yt.chocolatemoo53.com"
+RELAY_LIMIT = 150 * 1024 * 1024  # Respect community bandwidth and free-tier limits.
+
+def relay_media_url(raw):
+    parsed=urlsplit(str(raw))
+    if parsed.scheme!="https" or parsed.netloc!="yt.chocolatemoo53.com" or parsed.path!="/videoplayback":
+        raise ValueError("The relay provided an invalid media address.")
+    return raw
+
+def relay_process(key,folder,video_id,kind,quality,title):
+    """Use an explicitly selected open-source public Invidious relay."""
+    change(key,status="processing",progress=2,message="Checking trusted community relay...")
+    url=RELAY_ORIGIN+"/api/v1/videos/"+video_id+"?local=true"
+    response=requests.get(url,timeout=(7,25),allow_redirects=False)
+    if response.status_code!=200:
+        raise RuntimeError("Community relay metadata unavailable (HTTP "+str(response.status_code)+").")
+    if len(response.content)>1400000:
+        raise RuntimeError("Community relay response exceeded its safety limit.")
+    data=response.json()
+    if data.get("videoId")!=video_id or (data.get("lengthSeconds") or 0)>MAX_DURATION:
+        raise RuntimeError("Video is unavailable or exceeds the two-hour limit.")
+    fmts=data.get("adaptiveFormats") or []
+    audios=[f for f in fmts if f.get("itag")=="140" and
+            f.get("url","").startswith(RELAY_ORIGIN+"/videoplayback?")]
+    if not audios:
+        audios=[f for f in fmts if str(f.get("type","")).startswith("audio/") and
+                f.get("url","").startswith(RELAY_ORIGIN+"/videoplayback?")]
+    if not audios:raise RuntimeError("This relay did not return a usable audio stream.")
+    audios.sort(key=lambda f: abs(int(f.get("bitrate") or 128000)-128000))
+    audio=audios[0]
+    video=None
+    if kind=="video":
+        max_h = 1080 if quality=="best" else int(quality)
+        videos=[f for f in fmts if str(f.get("type","")).startswith("video/mp4") and
+                f.get("url","").startswith(RELAY_ORIGIN+"/videoplayback?")]
+        def height(f):
+            match=re.match(r"^(\d{3,4})p",str(f.get("qualityLabel") or ""))
+            return int(match.group(1)) if match else 0
+        videos=[f for f in videos if 0<height(f)<=max_h]
+        videos.sort(key=height,reverse=True)
+        if not videos:raise RuntimeError("No compatible MP4 quality was found through this relay.")
+        video=videos[0]
+    selections=[("audio",audio)]
+    if video:selections.insert(0,("video",video))
+    try:combined_size=sum(int(f.get("clen") or 0) for _,f in selections)
+    except Exception: combined_size=0
+    if combined_size and combined_size>RELAY_LIMIT:
+        raise RuntimeError("This video is too large for the community relay. Choose a lower quality.")
+    paths={}
+    count=0
+    for label,fmt in selections:
+        media_url=relay_media_url(fmt.get("url"))
+        change(key,status="downloading",message="Downloading "+label+" through community relay...")
+        with requests.get(media_url,timeout=(8,35),allow_redirects=False,stream=True,
+                          headers={"User-Agent":"Downwell/1.0", "Accept":"*/*"}) as remote:
+            if remote.status_code!=200:
+                raise RuntimeError("Community relay refused "+label+" stream (HTTP "+str(remote.status_code)+").")
+            ct=remote.headers.get("content-type","").lower()
+            if "text/html" in ct or "application/json" in ct:
+                raise RuntimeError("Community relay returned a web page instead of media.")
+            dest=folder/(label+".source")
+            with dest.open("wb") as target:
+                for part in remote.iter_content(chunk_size=128*1024):
+                    if not part:continue
+                    count+=len(part)
+                    if count>RELAY_LIMIT:
+                        raise RuntimeError("File exceeds the community relay size limit.")
+                    target.write(part)
+                    if combined_size:
+                        change(key,progress=min(90,round(count/combined_size*90,1)))
+            if dest.stat().st_size<1024:
+                raise RuntimeError("Community relay returned an incomplete "+label+" stream.")
+            paths[label]=dest
+    change(key,status="processing",progress=95,message="Converting and preparing your file...")
+    if kind=="audio":
+        dest=folder/"download.mp3"
+        args=["ffmpeg","-y","-loglevel","error","-i",str(paths["audio"]),
+              "-vn","-codec:a","libmp3lame","-qscale:a","3",str(dest)]
+    else:
+        dest=folder/"download.mp4"
+        args=["ffmpeg","-y","-loglevel","error","-i",str(paths["video"]),
+              "-i",str(paths["audio"]),"-map","0:v:0","-map","1:a:0",
+              "-c:v","copy","-c:a","aac","-movflags","+faststart","-shortest",str(dest)]
+    subprocess.run(args,check=True,timeout=240,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+    if not dest.exists() or dest.stat().st_size<1024:
+        raise RuntimeError("Conversion did not produce a file.")
+    safe=re.sub(r'[\\/:*?"<>|\x00-\x1f]',"_",title or data.get("title") or video_id).strip(" .")[:95] or video_id
+    change(key,status="ready",progress=100,message="Ready to save!",
+           path=str(dest),filename=safe+dest.suffix)
+
+
+def worker(key,url,kind,quality,video_id,title,client,relay=False):
     folder=ROOT/key
+    relay_problem=None
     try:
         folder.mkdir(parents=True,exist_ok=False)
+        if relay:
+            try:
+                relay_process(key,folder,video_id,kind,quality,title)
+                return
+            except Exception as exc:
+                relay_problem=str(exc)[:180]
+                app.logger.warning('Community relay failed: %s',relay_problem)
+                for p in folder.iterdir():
+                    if p.is_file():p.unlink()
+                change(key,status='queued',progress=0,message='Trying direct YouTube connection...')
         if kind=="audio":fmt="bestaudio/best"
         elif quality=="best":fmt="bv[ext=mp4]+ba[ext=m4a]/bv+ba/best"
         else:
@@ -393,7 +501,8 @@ def worker(key,url,kind,quality,video_id,title,client):
     except Exception as e:
         msg=str(e)
         if youtube_blocked(msg):
-            msg="YouTube is refusing downloads from this cloud server. Try again later; if this persists, the server network may need to change."
+            msg=("Community relay failed: "+relay_problem+". YouTube also blocks this server." if relay_problem else
+                 "YouTube is refusing downloads from this cloud server. Enable the community relay option and try again.")
         change(key,status="error",message=msg[:220])
         shutil.rmtree(folder,ignore_errors=True)
     finally:slots.release()
