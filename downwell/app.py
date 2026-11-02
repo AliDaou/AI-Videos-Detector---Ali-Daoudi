@@ -570,11 +570,11 @@ def relay_network_probe():
     folder=ROOT/("relay-test-"+uuid.uuid4().hex)
     try:
         folder.mkdir()
-        relay_process("self-test",folder,"jNQXAC9IVRw","audio","best","Test clip")
-        output=folder/"download.mp3"
+        relay_process("self-test",folder,"jNQXAC9IVRw","video","360","Test clip")
+        output=folder/"download.mp4"
         if not output.is_file() or output.stat().st_size<1024:
             raise RuntimeError("No MP3 output was produced.")
-        app.logger.warning("RELAY_SELF_TEST_PASS: MP3 successfully downloaded and converted (%d bytes).",output.stat().st_size)
+        app.logger.warning("RELAY_SELF_TEST_PASS: MP4 successfully downloaded and merged (%d bytes).",output.stat().st_size)
     except Exception as e:
         app.logger.warning("RELAY_SELF_TEST_FAIL: %s %s",type(e).__name__,str(e)[:220])
     finally:
