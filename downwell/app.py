@@ -17,6 +17,8 @@ TTL = 40 * 60
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be"}
 VALID_ID = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 QUALITIES = {"best", "1080", "720", "480", "360"}
+# Public extraction alternatives; cloud IP blocks can still affect all of them.
+YOUTUBE_CLIENTS = ("web_safari", "android_vr", "web_embedded")
 app = Flask(__name__)
 app.config.update(SECRET_KEY=os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32),
                   MAX_CONTENT_LENGTH=8192, SESSION_COOKIE_HTTPONLY=True,
@@ -128,7 +130,7 @@ catch(e){stop();el('download').disabled=false;error(e.message);}}
 el('download').addEventListener('click',async()=>{if(!current||el('download').disabled)return;clearError();stop();
 el('job').hidden=false;el('save').hidden=true;el('pct').textContent='0%';el('bar').style.width='0%';el('status').textContent='Connecting...';el('detail').textContent='';
 el('download').disabled=true;
-try{const d=await post('/api/download',{url:current.url,kind:kind,quality:el('quality').value,title:current.title});
+try{const d=await post('/api/download',{url:current.url,kind:kind,quality:el('quality').value,title:current.title,client:current.client});
 await status(d.job_id);if(poller===null&&el('download').disabled)poller=setInterval(()=>status(d.job_id),1200);}
 catch(e){el('download').disabled=false;error(e.message);}});
 </script></body></html>"""
@@ -151,10 +153,18 @@ def normal_url(value):
         raise ValueError("This is not a valid YouTube video or Shorts link.")
     return "https://www.youtube.com/watch?v="+video_id,video_id
 
-def options():
-    return {"quiet":True,"no_warnings":True,"noplaylist":True,"socket_timeout":25,
-            "retries":2,"fragment_retries":2,"extractor_retries":2,
-            "js_runtimes":{"deno":{}}}
+def options(client=None):
+    result = {"quiet":True,"no_warnings":True,"noplaylist":True,"socket_timeout":25,
+              "retries":2,"fragment_retries":2,"extractor_retries":2,
+              "js_runtimes":{"deno":{}}}
+    if client:
+        result["extractor_args"] = {"youtube":{"player_client":[client]}}
+    return result
+
+def youtube_blocked(message):
+    msg = str(message).lower()
+    return ("sign in to confirm" in msg or "not a bot" in msg
+            or "login_required" in msg or "http error 403" in msg)
 
 def purge():
     now=time.time()
@@ -223,18 +233,36 @@ def info():
     purge()
     try:
         url,video_id=normal_url(read_json().get("url"))
-        with yt_dlp.YoutubeDL({**options(),"skip_download":True}) as y:
-            data=y.extract_info(url,download=False)
-        if not data:raise ValueError("Video details were unavailable.")
-        if (data.get("duration") or 0)>MAX_DURATION:raise ValueError("Videos are limited to two hours on the free cloud plan.")
-        return jsonify(url=url,title=(data.get("title") or "YouTube video")[:200],
-                       channel=(data.get("channel") or data.get("uploader") or "YouTube")[:100],
-                       duration=data.get("duration"),
-                       thumbnail="https://i.ytimg.com/vi/"+video_id+"/hqdefault.jpg")
-    except ValueError as e:return jsonify(error=str(e)),400
-    except Exception as e:return jsonify(error="YouTube couldn't provide this video's details. Try another public video. "+str(e)[:130]),422
+    except ValueError as e:
+        return jsonify(error=str(e)),400
 
-def worker(key,url,kind,quality,video_id,title):
+    # Try multiple public clients without requiring Google session cookies.
+    last_error=None
+    data=None
+    selected=None
+    for client in YOUTUBE_CLIENTS:
+        try:
+            with yt_dlp.YoutubeDL({**options(client),"skip_download":True}) as y:
+                data=y.extract_info(url,download=False)
+            if data:
+                selected=client
+                break
+        except Exception as e:
+            last_error=e
+    if not data:
+        if last_error and youtube_blocked(last_error):
+            return jsonify(error="YouTube is blocking requests from this cloud server, even with alternate public clients. Your Downwell login cannot fix this. Try again later; a different server network may be required."),503
+        return jsonify(error="Could not retrieve this video. Check that it is public and available, then try again."),422
+
+    if (data.get("duration") or 0)>MAX_DURATION:
+        return jsonify(error="Videos are limited to two hours on the free cloud plan."),400
+    app.logger.info("Video metadata succeeded with client %s", selected)
+    return jsonify(url=url,title=(data.get("title") or "YouTube video")[:200],
+                   channel=(data.get("channel") or data.get("uploader") or "YouTube")[:100],
+                   duration=data.get("duration"),client=selected,
+                   thumbnail="https://i.ytimg.com/vi/"+video_id+"/hqdefault.jpg")
+
+def worker(key,url,kind,quality,video_id,title,client):
     folder=ROOT/key
     try:
         folder.mkdir(parents=True,exist_ok=False)
@@ -253,7 +281,7 @@ def worker(key,url,kind,quality,video_id,title):
         def filter_video(info,*,incomplete=False):
             if (info.get("duration") or 0)>MAX_DURATION:return "Video exceeds the two-hour limit."
             return None
-        opts={**options(),"format":fmt,"outtmpl":str(folder/"%(id)s.%(ext)s"),
+        opts={**options(client),"format":fmt,"outtmpl":str(folder/"%(id)s.%(ext)s"),
               "merge_output_format":"mp4","max_filesize":MAX_BYTES,"match_filter":filter_video,
               "progress_hooks":[hook],"concurrent_fragment_downloads":2}
         if kind=="audio":
@@ -270,8 +298,8 @@ def worker(key,url,kind,quality,video_id,title):
                path=str(target),filename=safe+target.suffix)
     except Exception as e:
         msg=str(e)
-        if "Sign in to confirm" in msg or "bot" in msg.lower():
-            msg="YouTube is refusing requests from this cloud server. Try later or use a different hosting network."
+        if youtube_blocked(msg):
+            msg="YouTube is refusing downloads from this cloud server. Try again later; if this persists, the server network may need to change."
         change(key,status="error",message=msg[:220])
         shutil.rmtree(folder,ignore_errors=True)
     finally:slots.release()
@@ -282,14 +310,16 @@ def download():
     try:
         data=read_json();url,video_id=normal_url(data.get("url"))
         kind=data.get("kind","video");quality=str(data.get("quality","best"))
-        if kind not in ("video","audio") or quality not in QUALITIES:raise ValueError("Unsupported format or quality.")
+        client=data.get("client","web_safari")
+        if kind not in ("video","audio") or quality not in QUALITIES or client not in YOUTUBE_CLIENTS:
+            raise ValueError("Unsupported format, quality or extraction client.")
         title=data.get("title","")
         if not isinstance(title,str):title=""
     except ValueError as e:return jsonify(error=str(e)),400
     if not slots.acquire(blocking=False):return jsonify(error="Two downloads are already running. Please finish one first."),429
     key=uuid.uuid4().hex
     with guard:jobs[key]={"created":time.time(),"status":"queued","progress":0,"message":"Preparing..."}
-    threading.Thread(target=worker,args=(key,url,kind,quality,video_id,title[:200]),daemon=True).start()
+    threading.Thread(target=worker,args=(key,url,kind,quality,video_id,title[:200],client),daemon=True).start()
     return jsonify(job_id=key),202
 
 @app.get("/api/status/<key>")
