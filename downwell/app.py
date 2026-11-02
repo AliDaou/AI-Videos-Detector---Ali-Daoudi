@@ -88,7 +88,7 @@ HOME = """<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name=
 <p class="eyebrow">01 / PASTE A YOUTUBE LINK</p>
 <form id="lookup"><div class="urlbox"><input id="url" type="url" required autocomplete="off" placeholder="https://www.youtube.com/watch?v=..." aria-label="YouTube URL">
 <button id="lookupBtn" type="submit">Get video ↗</button></div></form>
-<p class="muted">YouTube videos, Shorts, and youtu.be links. No playlists.</p>
+<p class="muted">YouTube videos, Shorts, and youtu.be links. No playlists. <a href="/direct" style="color:#baff82;font-weight:700">Having trouble? Use browser-safe mode →</a></p>
 <div id="alert" class="alert" role="alert" hidden></div>
 <section id="found" hidden><hr><p class="eyebrow">02 / FOUND YOUR VIDEO</p>
 <div class="preview"><img id="thumb" class="thumb" alt="YouTube thumbnail"><div><h2 id="title"></h2><p id="channel"></p></div></div>
@@ -106,7 +106,7 @@ HOME = """<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name=
 </main><script>
 const el=id=>document.getElementById(id);
 let current=null,kind='video',busy=false,poller=null;
-function error(message){el('alert').textContent=message;el('alert').hidden=false;}
+function error(message){const a=el('alert');a.textContent=message;if(/failed to fetch|network|load failed/i.test(message)){a.appendChild(document.createTextNode(' — '));const link=document.createElement('a');link.href='/direct';link.textContent='Use browser-safe mode';link.style.color='#baff82';link.style.fontWeight='700';a.appendChild(link);}a.hidden=false;}
 function clearError(){el('alert').hidden=true;el('alert').textContent='';}
 async function post(path,obj){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)});
 let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw Error(d.error||'Something went wrong');return d;}
@@ -134,6 +134,99 @@ try{const d=await post('/api/download',{url:current.url,kind:kind,quality:el('qu
 await status(d.job_id);if(poller===null&&el('download').disabled)poller=setInterval(()=>status(d.job_id),1200);}
 catch(e){el('download').disabled=false;error(e.message);}});
 </script></body></html>"""
+
+
+# Browsers or privacy extensions sometimes block JS fetch even for the same origin.
+# This alternate UI uses only standard HTML form submissions and redirects.
+DIRECT = """<!doctype html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+{% if job and job.status not in ('ready','error') %}<meta http-equiv="refresh" content="4">{% endif %}
+<title>Downwell | Browser-safe downloader</title><style>""" + STYLE + """</style></head>
+<body><main class="wrap" style="max-width:740px">
+<nav><div class="brand">downwell<b>.</b></div><span class="pill">BROWSER-SAFE MODE</span></nav>
+<section class="hero" style="padding-top:45px"><p class="overline">NO JAVASCRIPT REQUIRED</p>
+<h1>Just paste.<br><em>And download.</em></h1>
+<p class="sub">This mode uses normal browser pages, not JavaScript requests. Nothing to install.</p></section>
+<div class="panel">
+{% if not job %}
+<form action="/direct/download" method="post">
+<p class="eyebrow">YOUTUBE VIDEO OR SHORTS LINK</p>
+<input type="url" name="url" required maxlength="2048" autocomplete="off"
+placeholder="https://www.youtube.com/watch?v=..." value="{{ form.get('url','') }}"
+style="width:100%;padding:16px">
+<div class="choices" style="gap:18px">
+<label><input type="radio" name="kind" value="video" {% if form.get('kind','video') == 'video' %}checked{% endif %}> MP4 video</label>
+<label><input type="radio" name="kind" value="audio" {% if form.get('kind') == 'audio' %}checked{% endif %}> MP3 audio</label>
+</div>
+<p class="eyebrow">QUALITY</p>
+<select name="quality"><option value="best">Best available</option>
+<option value="1080">Up to 1080p</option><option value="720">Up to 720p</option>
+<option value="480">Up to 480p</option><option value="360">Up to 360p</option></select>
+<p class="eyebrow">YOUTUBE CONNECTION</p>
+<select name="client">
+<option value="web_safari">Default (Safari)</option>
+<option value="android_vr">Android alternative</option>
+<option value="web_embedded">Embedded alternative</option>
+</select>
+<button class="primary" type="submit">↓ Start download</button></form>
+{% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+<p class="small">If YouTube blocks the hosting server, changing the connection option may help, but it is not guaranteed.</p>
+{% else %}
+<p class="eyebrow">DOWNLOAD STATUS</p>
+{% if job.status == 'ready' %}
+<h2>Ready to save.</h2><p class="small">{{ job.filename }}</p>
+<a class="action" href="/api/file/{{ job_id }}">↓ Download file</a>
+{% elif job.status == 'error' %}
+<h2>Download failed.</h2><div class="alert">{{ job.message }}</div>
+{% else %}
+<h2>Processing your file...</h2><p class="sub">{{ job.message or 'Preparing...' }}</p>
+<p class="small">This page checks progress automatically every four seconds. Don't close it.</p>
+{% if job.progress is not none %}<div class="progress"><div class="bar" style="width:{{ job.progress }}%"></div></div>
+<p class="muted">{{ job.progress }}%</p>{% endif %}
+{% endif %}
+{% endif %}
+<p style="margin-top:30px"><a href="/direct" style="color:#baff82">← Start a new download</a>
+<span style="color:#6e8181"> · </span>
+<a href="/" style="color:#baff82">Standard interface</a></p>
+</div>
+<footer class="footer"><span>Private access. No ads or third-party converters.</span></footer>
+</main></body></html>"""
+
+@app.get("/direct")
+def direct_page():
+    return render_template_string(DIRECT,job=None,error=None,form={})
+
+@app.post("/direct/download")
+def direct_download():
+    form=request.form.to_dict()
+    try:
+        url,video_id=normal_url(form.get("url"))
+        kind=form.get("kind","video")
+        quality=form.get("quality","best")
+        client=form.get("client","web_safari")
+        if kind not in ("video","audio") or quality not in QUALITIES or client not in YOUTUBE_CLIENTS:
+            raise ValueError("Unsupported format or connection option.")
+    except ValueError as e:
+        return render_template_string(DIRECT,job=None,error=str(e),form=form),400
+    purge()
+    if not slots.acquire(blocking=False):
+        return render_template_string(DIRECT,job=None,error="Two downloads are already running. Try again shortly.",form=form),429
+    key=uuid.uuid4().hex
+    with guard:
+        jobs[key]={"created":time.time(),"status":"queued","progress":0,"message":"Preparing..."}
+    threading.Thread(target=worker,args=(key,url,kind,quality,video_id,video_id,client),daemon=True).start()
+    return redirect("/direct/status/"+key,code=303)
+
+@app.get("/direct/status/<key>")
+def direct_status(key):
+    purge()
+    with guard:
+        job=jobs.get(key)
+        job=dict(job) if job else None
+    if not job:
+        return render_template_string(DIRECT,job=None,error="This download expired or the server restarted. Please try again.",form={}),404
+    return render_template_string(DIRECT,job=job,job_id=key,error=None,form={})
+
 
 def normal_url(value):
     if not isinstance(value,str) or len(value)>2048 or not value.startswith(("https://","http://")):
