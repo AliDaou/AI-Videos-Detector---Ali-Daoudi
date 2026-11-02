@@ -544,26 +544,21 @@ def file(key):
     return send_file(path,as_attachment=True,download_name=job["filename"],max_age=0)
 
 
-# One-off network check on startup: no account cookies or user links.
+
+# One-time staging self-test for the current deployment. Removed once verified.
 def relay_network_probe():
+    folder=ROOT/("relay-test-"+uuid.uuid4().hex)
     try:
-        source="https://yt.chocolatemoo53.com"
-        with requests.get(source+"/api/v1/videos/jNQXAC9IVRw?local=true",timeout=(5,15),allow_redirects=False) as resp:
-            if resp.status_code!=200:
-                app.logger.warning("Relay probe metadata returned HTTP %s",resp.status_code);return
-            info=resp.json()
-        formats=info.get("adaptiveFormats") or []
-        sample=next((f for f in formats if f.get("itag")=="140" and
-                     f.get("url","").startswith(source+"/videoplayback?")),None)
-        if not sample:
-            app.logger.warning("Relay probe: metadata OK, no proxied audio format");return
-        with requests.get(sample["url"],headers={"Range":"bytes=0-1023"},
-                          timeout=(6,16),stream=True,allow_redirects=False) as media:
-            size=sum(len(c) for c in media.iter_content(chunk_size=1024) if c)
-            app.logger.info("Relay probe metadata OK; audio HTTP %s; read %s bytes; content type %s",
-                            media.status_code,min(size,1024),media.headers.get("content-type"))
+        folder.mkdir()
+        relay_process("self-test",folder,"jNQXAC9IVRw","audio","best","Test clip")
+        output=folder/"download.mp3"
+        if not output.is_file() or output.stat().st_size<1024:
+            raise RuntimeError("No MP3 output was produced.")
+        app.logger.warning("RELAY_SELF_TEST_PASS: MP3 successfully downloaded and converted (%d bytes).",output.stat().st_size)
     except Exception as e:
-        app.logger.warning("Relay probe failed (%s): %s",type(e).__name__,str(e)[:100])
+        app.logger.warning("RELAY_SELF_TEST_FAIL: %s %s",type(e).__name__,str(e)[:220])
+    finally:
+        shutil.rmtree(folder,ignore_errors=True)
 
 threading.Thread(target=relay_network_probe,daemon=True).start()
 
