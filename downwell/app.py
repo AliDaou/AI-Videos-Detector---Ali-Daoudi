@@ -4,6 +4,7 @@ import os, re, secrets, shutil, threading, time, uuid
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 from flask import Flask, request, jsonify, render_template_string, send_file, abort, redirect, session
+import requests
 import yt_dlp
 
 ROOT = Path("/tmp/downwell_jobs")
@@ -432,6 +433,30 @@ def file(key):
     path=Path(job["path"])
     if not path.is_file():abort(404)
     return send_file(path,as_attachment=True,download_name=job["filename"],max_age=0)
+
+
+# One-off network check on startup: no account cookies or user links.
+def relay_network_probe():
+    try:
+        source="https://yt.chocolatemoo53.com"
+        with requests.get(source+"/api/v1/videos/jNQXAC9IVRw?local=true",timeout=(5,15),allow_redirects=False) as resp:
+            if resp.status_code!=200:
+                app.logger.warning("Relay probe metadata returned HTTP %s",resp.status_code);return
+            info=resp.json()
+        formats=info.get("adaptiveFormats") or []
+        sample=next((f for f in formats if f.get("itag")=="140" and
+                     f.get("url","").startswith(source+"/videoplayback?")),None)
+        if not sample:
+            app.logger.warning("Relay probe: metadata OK, no proxied audio format");return
+        with requests.get(sample["url"],headers={"Range":"bytes=0-1023"},
+                          timeout=(6,16),stream=True,allow_redirects=False) as media:
+            size=sum(len(c) for c in media.iter_content(chunk_size=1024) if c)
+            app.logger.info("Relay probe metadata OK; audio HTTP %s; read %s bytes; content type %s",
+                            media.status_code,min(size,1024),media.headers.get("content-type"))
+    except Exception as e:
+        app.logger.warning("Relay probe failed (%s): %s",type(e).__name__,str(e)[:100])
+
+threading.Thread(target=relay_network_probe,daemon=True).start()
 
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=int(os.environ.get("PORT","10000")))
