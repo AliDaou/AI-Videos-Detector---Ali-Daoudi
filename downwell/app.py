@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os, re, secrets, shutil, threading, time, uuid, subprocess
 from pathlib import Path
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, urljoin
 from flask import Flask, request, jsonify, render_template_string, send_file, abort, redirect, session
 import requests
 import yt_dlp
@@ -371,6 +371,27 @@ def relay_media_url(raw):
         raise ValueError("The relay provided an invalid media address.")
     return raw
 
+def open_relay_stream(url):
+    """Follow redirects only to the trusted relay operator's media hosts."""
+    url=relay_media_url(url)
+    for _ in range(5):
+        response=requests.get(url,timeout=(8,35),allow_redirects=False,stream=True,
+                              headers={"User-Agent":"Mozilla/5.0 (compatible; Downwell/1.0)","Accept":"*/*"})
+        if response.status_code not in (301,302,303,307,308):
+            return response
+        loc=response.headers.get("location","")
+        response.close()
+        target=urljoin(url,loc)
+        parsed=urlsplit(target)
+        host=(parsed.hostname or "").lower()
+        allowed=(host=="yt.chocolatemoo53.com" or
+                 (host.endswith(".chocolatemoo53.com") and host.startswith("yt-comp")))
+        if parsed.scheme!="https" or not allowed or parsed.username or parsed.password or parsed.port not in (None,443):
+            raise RuntimeError("Media relay redirected outside trusted hosts: "+host[:70])
+        app.logger.warning("Community relay media redirect to trusted host %s",host)
+        url=target
+    raise RuntimeError("Media relay redirected too many times.")
+
 def relay_process(key,folder,video_id,kind,quality,title):
     """Use an explicitly selected open-source public Invidious relay."""
     change(key,status="processing",progress=2,message="Checking trusted community relay...")
@@ -415,8 +436,7 @@ def relay_process(key,folder,video_id,kind,quality,title):
     for label,fmt in selections:
         media_url=relay_media_url(fmt.get("url"))
         change(key,status="downloading",message="Downloading "+label+" through community relay...")
-        with requests.get(media_url,timeout=(8,35),allow_redirects=False,stream=True,
-                          headers={"User-Agent":"Downwell/1.0", "Accept":"*/*"}) as remote:
+        with open_relay_stream(media_url) as remote:
             if remote.status_code!=200:
                 raise RuntimeError("Community relay refused "+label+" stream (HTTP "+str(remote.status_code)+").")
             ct=remote.headers.get("content-type","").lower()
