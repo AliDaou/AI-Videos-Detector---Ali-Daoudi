@@ -4,6 +4,8 @@ import {
   MediaStreamVideoTrackSource, MediaStreamAudioTrackSource, Quality
 } from "https://cdn.jsdelivr.net/npm/mediabunny@1.65.0/+esm";
 
+window.__DOWNWELL_V2_READY=true;
+
 // Downwell Record v2. Media capture, encoding, remuxing and repair stay on-device.
 // No upload endpoints, cookies, analytics, or access to browsing history.
 const el = id => document.getElementById(id);
