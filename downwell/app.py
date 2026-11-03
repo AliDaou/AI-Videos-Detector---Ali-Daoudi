@@ -565,5 +565,31 @@ def file(key):
 
 
 
+
+def probe_relay_ranges():
+    """Temporary diagnostic for interrupted community relay streams, no user data."""
+    try:
+        source=RELAY_ORIGIN+"/api/v1/videos/-NWJh_y-Y6w?local=true"
+        d=requests.get(source,timeout=(5,12)).json()
+        fmt=next(x for x in d.get("adaptiveFormats",[]) if str(x.get("itag"))=="137" and x.get("url","").startswith(RELAY_ORIGIN+"/videoplayback?"))
+        url=fmt["url"]
+        for begin in (0,3145728):
+            with requests.get(url,headers={"Range":f"bytes={begin}-{begin+524287}"},timeout=(6,16),stream=True,allow_redirects=False) as q:
+                app.logger.warning("RANGE_PROBE initial status=%s location=%s",q.status_code,str(q.headers.get("location"))[:100])
+                if q.status_code in (301,302,303,307,308):
+                    target=urljoin(url,q.headers.get("location",""))
+                    if urlsplit(target).hostname not in ("yt-comp1.chocolatemoo53.com","yt-comp2.chocolatemoo53.com","yt-comp3.chocolatemoo53.com","yt-comp4.chocolatemoo53.com","yt-comp5.chocolatemoo53.com","yt-comp6.chocolatemoo53.com"):continue
+                    with requests.get(target,headers={"Range":f"bytes={begin}-{begin+524287}"},timeout=(6,16),stream=True,allow_redirects=False) as media:
+                        app.logger.warning("RANGE_PROBE begin=%s status=%s content-range=%s length=%s accept-ranges=%s",
+                           begin,media.status_code,media.headers.get("content-range"),media.headers.get("content-length"),media.headers.get("accept-ranges"))
+                        try:
+                            chunk=next(media.iter_content(chunk_size=1024))
+                            app.logger.warning("RANGE_PROBE first bytes=%s",len(chunk))
+                        except Exception as e: app.logger.warning("RANGE_PROBE readfail %s",str(e)[:160])
+    except Exception as e:
+        app.logger.warning("RANGE_PROBE exception=%s %s",type(e).__name__,str(e)[:160])
+
+threading.Thread(target=probe_relay_ranges,daemon=True).start()
+
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=int(os.environ.get("PORT","10000")))
