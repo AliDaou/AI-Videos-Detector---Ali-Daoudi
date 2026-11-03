@@ -24,6 +24,8 @@ let lastBlob = null;
 let lastFilename = "";
 let repairUrl = null;
 let saveBusy = false;
+let lastReportText = "";
+let recordingNumber = 0;
 
 const show = (msg, error=false) => {
   el("notice").textContent = msg;
@@ -100,40 +102,88 @@ function finishButtons(){
   el("pause").textContent="Ⅱ Pause";
   paused=false;saving=false;
 }
-function autoDownload(buffer,type,filename){
+function offerDownload(blob,filename,automatic){
   removeUrl();
-  lastBlob=new Blob([buffer],{type});
-  outputUrl=URL.createObjectURL(lastBlob);
+  lastBlob=blob;
+  outputUrl=URL.createObjectURL(blob);
   const a=el("download");
-  a.href=outputUrl;a.download=filename;a.hidden=false;
-  a.click();
-  return lastBlob;
+  a.href=outputUrl;a.download=filename;
+  a.textContent=automatic?"↓ Download verified recording":"↓ Save partial recording anyway";
+  a.hidden=false;
+  if(automatic)a.click();
 }
-async function verifyRecording(file,duration,frames){
+async function verifyRecording(file,elapsed,state){
+  let input=null,metaDuration=null,measuredDuration=null,video=null,audio=null,reason="";
   try{
-    const input=new Input({source:new BlobSource(file),formats:ALL_FORMATS});
-    const video=await input.getPrimaryVideoTrack();
-    const audio=await input.getPrimaryAudioTrack();
-    const gotDuration=await input.computeDuration();
-    if(mode==="video" && !video){
-      show("The file was saved, but no video track could be found. Audio may still be recoverable. Try again using Chrome Tab sharing.",true);
-      return;
+    input=new Input({source:new BlobSource(file),formats:ALL_FORMATS});
+    video=await input.getPrimaryVideoTrack();
+    audio=await input.getPrimaryAudioTrack();
+    // First check container metadata; compute from packets only if necessary.
+    metaDuration=await input.getDurationFromMetadata();
+    if(!(Number.isFinite(metaDuration)&&metaDuration>0)){
+      measuredDuration=await input.computeDuration();
     }
-    if(mode==="video" && frames<3 && duration>5){
-      show("Saved, but the recording contains almost no moving video frames. A repair cannot recreate footage that Chrome never captured. Record a short test while the shared YouTube video is playing.",true);
-      return;
+    const actual=Number.isFinite(metaDuration)&&metaDuration>0?metaDuration:measuredDuration;
+    if(elapsed<1.5){
+      reason="Chrome recorded for less than two seconds. Sharing likely ended immediately or the recorder was stopped before it began.";
+    }else if(state.mode==="video"&&!video){
+      reason="No video track was written.";
+    }else if(state.mode==="video"&&state.videoFrames<3){
+      reason="Only "+state.videoFrames+" video frame(s) were encoded. The capture did not produce moving video.";
+    }else if(!Number.isFinite(actual)||actual<1.25){
+      reason="The file has less than 1.25 seconds of playable media, or the duration could not be measured.";
+    }else if(elapsed>=8 && actual<elapsed*0.55){
+      reason="The media is substantially shorter than the session. Chrome likely stopped providing video or audio.";
+    }else if(state.mode==="video"&&state.videoFrames>=3&&state.lastVideoPacketSeconds<Math.max(1,elapsed*.45)){
+      reason="Video stopped updating long before the session ended.";
+    }else if(!audio){
+      reason="No audio track was written. Choose Chrome Tab and enable Share tab audio.";
     }
-    if(!Number.isFinite(gotDuration) || gotDuration<1){
-      show("Saved, but the recording duration couldn't be verified. Try the Repair tool below.",true);
-      return;
-    }
-    show("Saved and finalized: "+bytesText(file.size)+" · "+fmtTime(gotDuration)+" · "+
-         (video?"video":"audio")+" track "+(audio?"+ audio track":"")+
-         ". The file now has duration/seek metadata.");
+    return {ok:!reason,reason,actual:Number.isFinite(actual)?actual:0,
+            metadata:Number.isFinite(metaDuration)?metaDuration:null,
+            hasVideo:!!video,hasAudio:!!audio,bytes:file.size};
   }catch(e){
-    show("File saved, but automatic verification couldn't read it ("+e.message+"). You can try Repair below.",true);
-  }
+    return {ok:false,reason:"File inspection failed: "+(e.message||String(e)),
+            actual:0,metadata:null,hasVideo:!!video,hasAudio:!!audio,bytes:file.size};
+  }finally{try{input?.dispose();}catch(_){}}
 }
+function reportFor(state,elapsed,check){
+  const videoTrack=state.display?.getVideoTracks()?.[0];
+  const audioTrack=state.display?.getAudioTracks()?.[0];
+  const report={
+    app:"Downwell Record V3",session:state.session,browser:navigator.userAgent,
+    recordingMode:state.mode,format:state.format,stopReason:state.stopReason,
+    elapsedSeconds:Math.round(elapsed*10)/10,
+    videoFrames:state.videoFrames,audioPackets:state.audioPackets,
+    lastVideoPacketSeconds:Math.round((state.lastVideoPacketSeconds||0)*10)/10,
+    lastAudioPacketSeconds:Math.round((state.lastAudioPacketSeconds||0)*10)/10,
+    sharedSurface:state.sharedSurface||"unknown",
+    videoTrackState:videoTrack?.readyState||"missing",
+    audioTrackState:audioTrack?.readyState||"missing",
+    videoMuteCount:state.videoMuteCount||0,
+    outputDurationSeconds:Math.round((check?.actual||0)*10)/10,
+    fileSizeBytes:check?.bytes||0,
+    hasVideo:!!check?.hasVideo,hasAudio:!!check?.hasAudio,
+    verificationError:check?.reason||"none"
+  };
+  lastReportText=JSON.stringify(report,null,2);
+  const button=el("copyReport");if(button)button.hidden=false;
+  const preview=el("reportPreview");
+  if(preview)preview.textContent="Session "+report.session+": "+report.elapsedSeconds+"s session / "+report.outputDurationSeconds+"s file; "+
+                                report.videoFrames+" frames; stop reason: "+report.stopReason+".";
+}
+const copyBtn=el("copyReport");
+if(copyBtn)copyBtn.addEventListener("click",async()=>{
+  if(!lastReportText)return;
+  try{
+    await navigator.clipboard.writeText(lastReportText);
+    copyBtn.textContent="✓ Report copied";
+  }catch(e){
+    const p=el("reportPreview");
+    if(p){p.textContent=lastReportText;p.hidden=false;}
+    show("Clipboard unavailable. Select and copy the report shown below.",true);
+  }
+});
 async function setMp4Availability(){
   const option=el("format").querySelector('option[value="mp4"]');
   const hasApi=typeof VideoEncoder!=="undefined" && typeof AudioEncoder!=="undefined";
