@@ -18,7 +18,7 @@ MAX_DURATION = 2 * 60 * 60
 TTL = 40 * 60
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be"}
 VALID_ID = re.compile(r"^[a-zA-Z0-9_-]{11}$")
-QUALITIES = {"best", "1080", "720", "480", "360"}
+QUALITIES = {"fast", "best", "1080", "720", "480", "360"}
 # Public extraction alternatives; cloud IP blocks can still affect all of them.
 YOUTUBE_CLIENTS = ("web_safari", "android_vr", "web_embedded")
 app = Flask(__name__)
@@ -166,9 +166,13 @@ style="width:100%;padding:16px">
 <label><input type="radio" name="kind" value="audio" {% if form.get('kind') == 'audio' %}checked{% endif %}> MP3 audio</label>
 </div>
 <p class="eyebrow">QUALITY</p>
-<select name="quality"><option value="720">720p — fastest good quality (recommended)</option><option value="best">Best available (slower)</option>
-<option value="1080">Up to 1080p (larger/slower)</option>
-<option value="480">Up to 480p</option><option value="360">Up to 360p</option></select>
+<select name="quality">
+<option value="fast">Fast 480p — small file (may use AV1)</option>
+<option value="720">Up to 720p — sharper video</option>
+<option value="480">Up to 480p — H.264 when possible</option>
+<option value="360">Up to 360p — smallest file</option>
+<option value="1080">Up to 1080p — auto-adjusts for size</option>
+<option value="best">Best within relay limit</option></select>
 <p class="eyebrow">YOUTUBE CONNECTION</p>
 <select name="client">
 <option value="web_safari">Default (Safari)</option>
@@ -532,16 +536,24 @@ def relay_process(key,folder,video_id,kind,quality,title):
     audio=audios[0]
     video=None
     if kind=="video":
-        max_h = 1080 if quality=="best" else int(quality)
+        max_h = 480 if quality=="fast" else (1080 if quality=="best" else int(quality))
         videos=[f for f in fmts if str(f.get("type","")).startswith("video/mp4") and
                 f.get("url","").startswith(RELAY_ORIGIN+"/videoplayback?")]
         def height(f):
             match=re.match(r"^(\d{3,4})p",str(f.get("qualityLabel") or ""))
             return int(match.group(1)) if match else 0
-        videos=[f for f in videos if 0<height(f)<=max_h]
-        videos.sort(key=height,reverse=True)
-        if not videos:raise RuntimeError("No compatible MP4 quality was found through this relay.")
-        video=videos[0]
+        videos=[f for f in videos if 0<height(f)<=max_h and int(f.get("clen") or 0)>0]
+        # Prefer editing-friendly H.264 at each resolution; use compact AV1
+        # when Fast was requested or when H.264 exceeds the size cap.
+        if quality=="fast":
+            videos.sort(key=lambda f:(-height(f),int(f.get("clen"))))
+        else:
+            videos.sort(key=lambda f:(-height(f),0 if "avc1" in f.get("type","") else 1,int(f.get("clen"))))
+        audio_size=int(audio.get("clen") or 0)
+        video=next((f for f in videos if int(f.get("clen"))+audio_size<=RELAY_LIMIT),None)
+        if not video:
+            raise RuntimeError("This video exceeds the 150 MB relay limit even in its smallest format. Try MP3.")
+        change(key,progress=3,message=f"Selected {video.get('qualityLabel','MP4')} within 150 MB — preparing fast download...")
     selections=[("audio",audio)]
     if video:selections.insert(0,("video",video))
     try:combined_size=sum(int(f.get("clen") or 0) for _,f in selections)
@@ -579,6 +591,7 @@ def worker(key,url,kind,quality,video_id,title,client,relay=False):
             return
         if kind=="audio":fmt="bestaudio/best"
         elif quality=="best":fmt="bv[ext=mp4]+ba[ext=m4a]/bv+ba/best"
+        elif quality=="fast":fmt="bv[height<=480][ext=mp4]+ba[ext=m4a]/bv[height<=480]+ba/b[height<=480]"
         else:
             q=int(quality);fmt="bv[height<="+str(q)+"][ext=mp4]+ba[ext=m4a]/bv[height<="+str(q)+"]+ba/b[height<="+str(q)+"]"
         def hook(data):
@@ -662,7 +675,7 @@ def downwell_range_self_test():
     begin=time.monotonic()
     try:
         folder.mkdir()
-        relay_process("bench",folder,"7_IvsIYlHSg","video","720","Range benchmark")
+        relay_process("bench",folder,"-NWJh_y-Y6w","video","720","Range benchmark")
         result=folder/"download.mp4"
         if not result.is_file() or result.stat().st_size<1024:raise RuntimeError("No merged MP4 file.")
         probe=subprocess.run(["ffprobe","-v","error","-show_entries","stream=codec_type",
