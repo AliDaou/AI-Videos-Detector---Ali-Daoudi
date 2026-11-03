@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0e12">
+<title>Downwell Record V3 — Reliable Screen Recorder</title>
+<meta name="description" content="Capture a Chrome tab with sound and save video clips directly to your computer. No installs, ads or uploads.">
+<style>
+:root {color-scheme:dark;--bg:#090d11;--surface:#141b20;--surface2:#192229;--border:#2b383c;--muted:#9eb0b4;--text:#f3f8f7;--accent:#b4fb77;--accent-dark:#213728;--danger:#ff9b91}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse 80% 420px at 45% 0%,#203b2a 0%,var(--bg) 72%);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Arial,sans-serif;min-height:100vh}
+.wrap{width:min(1050px,calc(100% - 38px));margin:auto;padding:26px 0 70px}
+nav{display:flex;justify-content:space-between;align-items:center;padding:14px 0 24px;border-bottom:1px solid #28332d;gap:15px}
+.brand{font-size:28px;font-weight:900;letter-spacing:-1.6px}.brand b{color:var(--accent)}
+.status{font-size:12px;font-weight:750;color:#c9ff9e;border:1px solid #47734a;background:#1d3323;border-radius:99px;padding:10px 13px}
+.hero{padding:52px 0 35px}.kicker{color:var(--accent);letter-spacing:2px;font-size:11px;font-weight:900;margin-bottom:18px}
+h1{font-size:clamp(43px,6.5vw,76px);line-height:1.04;letter-spacing:-3.7px;margin:0 0 18px}
+h1 strong{color:var(--accent);font-weight:900}.sub{font-size:17px;color:#bac7c7;line-height:1.65;max-width:760px;margin:0}
+.layout{display:grid;grid-template-columns:minmax(300px,1fr) minmax(0,1.05fr);gap:20px}
+.panel{border:1px solid #35433f;border-radius:22px;background:linear-gradient(155deg,#171f23,#101619);padding:25px;min-width:0;box-shadow:0 16px 55px #0004}
+.eyebrow{font-size:11px;letter-spacing:1.6px;font-weight:850;color:#9fafb6;margin:0 0 13px}
+.group{margin:0 0 22px}.toggles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.toggle{background:#10171a;border:1px solid #34413e;color:#d4e0df;padding:13px 10px;border-radius:11px;text-align:center;font-weight:750;cursor:pointer}
+.toggle[data-active="true"]{color:var(--accent);border-color:#8fc66f;background:#1f3524}
+.toggle:focus-visible,button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+select{width:100%;background:#0e1518;color:#f2f6f3;border:1px solid #3b4c4a;padding:13px 12px;border-radius:12px;font-size:14px}
+.option{display:flex;align-items:center;gap:10px;font-size:14px;color:#d9e4e1;margin-top:16px}
+.option input{accent-color:#b4fb77;width:17px;height:17px}
+.muted{color:#a6b3b4;font-size:12px;line-height:1.55}
+hr{height:1px;background:#2c3b3a;border:0;margin:24px 0}
+button{font:inherit;cursor:pointer}
+.primary{width:100%;background:var(--accent);color:#142314;border:0;border-radius:12px;padding:17px 16px;font-size:16px;font-weight:900;display:flex;gap:9px;justify-content:center;align-items:center}
+.primary:hover{background:#cdffa7}
+.primary:disabled{opacity:.48;cursor:not-allowed}
+.secondary{background:#1a2926;border:1px solid #58785b;border-radius:11px;padding:12px;color:#d7f5d2;font-size:14px;font-weight:800;width:100%}
+.secondary:hover{background:#233a30}
+.rowButtons{display:flex;gap:10px;margin:12px 0}.rowButtons>button{flex:1;min-width:0}
+.recordbtn{background:#282123;border:1px solid #885751;color:#ffd9d4;border-radius:11px;padding:13px;font-weight:850}
+.recordbtn:disabled,.outline:disabled{opacity:.35;cursor:not-allowed}
+.outline{background:#162027;border:1px solid #415356;color:#e4eeed;border-radius:11px;padding:13px;font-weight:800}
+.preview{background:#0b1114;aspect-ratio:16/9;position:relative;display:grid;place-items:center;border:1px solid #3a4a45;border-radius:14px;overflow:hidden}
+.preview video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+.preview .empty{display:flex;flex-direction:column;align-items:center;gap:12px;color:#859a99;text-align:center;font-size:13px;padding:20px}
+.empty .glyph{font-size:39px}
+.preview .corner{z-index:2;position:absolute;top:13px;left:13px;border:1px solid #41524a;border-radius:8px;background:#09100caa;padding:8px 10px;color:#b6c7c4;font-size:11px;letter-spacing:1px;font-weight:850}
+.preview.live .corner{background:#b53b36;color:#fff;border-color:#dc6761}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:18px}
+.metric{background:#0d1518;border:1px solid #2b3a38;border-radius:10px;padding:11px 12px}
+.metric small{display:block;color:#8da1a4;font-size:10px;letter-spacing:1px;font-weight:800;margin-bottom:6px}
+.metric strong{font-size:17px;font-variant-numeric:tabular-nums}
+.help{background:#14231b;border:1px solid #38533c;border-radius:12px;padding:17px;margin-top:19px}
+.help b{font-size:14px;color:#cdfcb3}.help p{margin:8px 0 0;font-size:13px;color:#b5c7ba;line-height:1.62}
+.notice{padding:12px 14px;border:1px solid #3b5945;background:#183022;border-radius:12px;color:#d8f2dc;font-size:13px;line-height:1.5;margin:16px 0}
+.notice.error{border-color:#88554f;background:#3a2220;color:#ffd2ca}
+.download{display:block;background:#bbff87;color:#152714;border-radius:12px;font-weight:850;text-decoration:none;text-align:center;padding:15px;margin-top:14px}
+.caption{font-size:12px;color:#a4b3b1;line-height:1.7}
+.steps{display:flex;gap:8px;flex-wrap:wrap;margin:22px 0 0}
+.step{background:#15241c;border:1px solid #35543b;color:#c4e8ca;border-radius:99px;padding:9px 12px;font-size:12px;font-weight:750}
+footer{margin-top:27px;border-top:1px solid #29382f;padding:22px 0 0;display:flex;justify-content:space-between;gap:15px;flex-wrap:wrap;color:#839a97;font-size:12px}
+code{color:#c9f2bb}
+@media(max-width:800px){.layout{grid-template-columns:1fr}.hero{padding:38px 0 28px}h1{letter-spacing:-2px}.panel{padding:20px}}
+@media(max-width:420px){.metrics{grid-template-columns:1fr 1fr}.metric:last-child{grid-column:span 2}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><div class="brand">downwell<b>.</b> <span style="font-size:13px;color:#92ae9d;font-weight:700;letter-spacing:0">RECORD V3</span></div><div class="status">● ON-DEVICE RECORDING</div></nav>
+<header class="hero"><div class="kicker">✦ ONE CLICK. ALL YOUR CLIPS.</div><h1>Record the screen.<br><strong>Capture the sound.</strong></h1><p class="sub">No downloader, no YouTube bot checks, no software installation. Capture the tab and sound, then save a seekable, editable video file directly to your PC.</p>
+<div class="steps"><div class="step">① Open the video in Chrome</div><div class="step">② Share tab + audio</div><div class="step">③ Hit stop and save</div></div></header>
+<main class="layout">
+<section class="panel" aria-label="Recording controls">
+<p class="eyebrow">01 / WHAT TO RECORD</p>
+<div class="group">
+<div class="toggles" id="modes">
+<button class="toggle" type="button" data-mode="video" data-active="true">▣ Video + audio</button>
+<button class="toggle" type="button" data-mode="audio" data-active="false">♫ Audio only</button>
+</div></div>
+<div class="group">
+<p class="eyebrow">02 / QUALITY</p>
+<select id="quality" aria-label="Video quality">
+<option value="standard">720p · Smaller clips</option>
+<option value="high" selected>1080p · Recommended</option>
+<option value="max">Best resolution · Larger files</option>
+</select>
+</div>
+<div class="group">
+<p class="eyebrow">03 / FILE FORMAT</p>
+<select id="format" aria-label="Recording format">
+<option value="webm" selected>Seekable WebM · Recommended</option>
+<option value="mp4">MP4 (H.264/AAC) · When supported</option>
+</select>
+<p class="muted" id="formatHint">WebM has proper duration and seek metadata in this version. MP4 depends on browser encoding support.</p>
+<label class="option"><input type="checkbox" id="mic"> Include my microphone (optional)</label>
+</div>
+<hr>
+<p class="eyebrow">04 / SAVING</p>
+<button id="choose" type="button" class="secondary">▤ Choose where to save (recommended)</button>
+<p id="fileStatus" class="muted">For long videos, choose a file before Start. The site writes progressively to disk, then finalizes duration/seek metadata when you stop.</p>
+<hr>
+<button id="start" type="button" class="primary">● Start recording</button>
+<div class="rowButtons">
+<button id="pause" type="button" class="outline" disabled>Ⅱ Pause</button>
+<button id="stop" type="button" class="recordbtn" disabled>■ Stop & save</button>
+</div>
+<p id="notice" class="notice" role="status" aria-live="polite">Choose <strong>Chrome Tab</strong> in the sharing dialog and turn on <strong>Share tab audio</strong>.</p>
+<a id="download" href="#" class="download" hidden>↓ Download your recording</a>
+<button id="copyReport" type="button" class="secondary" style="margin-top:12px" hidden>Copy diagnostic report</button>
+<pre id="reportPreview" hidden style="color:#c6ddcf;font-size:11px;white-space:pre-wrap;word-break:break-word;background:#0c1511;border:1px solid #304735;border-radius:10px;padding:12px"></pre>
+</section>
+<section class="panel" aria-label="Recording preview">
+<p class="eyebrow">LIVE PREVIEW</p>
+<div class="preview" id="preview">
+<div class="corner" id="liveTag">STANDBY</div>
+<div class="empty" id="empty"><div class="glyph">▣</div><strong>Your screen will appear here</strong><span>Watch this preview briefly to confirm that the moving picture is captured. It is muted to avoid echo.</span></div>
+<video id="player" autoplay muted playsinline hidden></video>
+</div>
+<div class="metrics">
+<div class="metric"><small>DURATION</small><strong id="clock">00:00</strong></div>
+<div class="metric"><small>SOUND</small><strong id="sound">Waiting</strong></div>
+<div class="metric"><small>VIDEO FRAMES</small><strong id="bytes">0 frames</strong></div>
+</div>
+<div class="help">
+<b>How to capture YouTube sound</b>
+<p>Open the YouTube video in a separate Chrome tab. Press Start, choose <strong>Chrome Tab</strong> (not Window/Entire Screen), select the actual playing video tab, and enable <strong>Share tab audio</strong>. Keep the YouTube tab visible while it plays. Check that <strong>VIDEO FRAMES</strong> increases before recording a full video. Do not click Chrome’s <strong>Stop sharing</strong> control until you want recording to end. If Chrome ends sharing early, Downwell will explain that instead of downloading a broken clip.</p>
+</div>
+<p class="caption" style="margin-top:17px">Every new recording now needs a new filename so a retry cannot overwrite your earlier clip. A one-second or otherwise incomplete recording will not auto-download; you can save the partial file manually and copy a diagnostic report. Your screen and audio never upload to this website.</p>
+</section>
+</main>
+<section class="panel" style="margin-top:22px" aria-label="Repair your previous recording">
+<p class="eyebrow">FIX A PREVIOUS RECORDING · NO UPLOADS</p>
+<h2 style="font-size:25px;letter-spacing:-.8px;margin:0 0 9px">Old recording won't seek?</h2>
+<p class="sub" style="font-size:14px">Select the broken WebM or MP4 file. The recorder will attempt to rebuild its duration and seek index <strong>entirely in your browser</strong>, leaving the original untouched. This can fix an unseekable timeline, but it cannot restore missing video frames.</p>
+<div style="display:flex;gap:13px;align-items:center;flex-wrap:wrap;margin:17px 0">
+<input id="repairFile" type="file" accept=".webm,.mp4,video/webm,video/mp4" aria-label="Select broken recording" style="flex:1;min-width:220px;font:inherit;color:#c1d6c8;padding:12px;border:1px solid #405a4b;border-radius:10px">
+<button id="repairButton" class="secondary" type="button" style="width:auto;min-width:175px" disabled>Repair & make seekable</button>
+</div>
+<p id="repairStatus" class="notice" aria-live="polite">Your file is read locally. No uploads or server conversion.</p>
+<a id="repairDownload" href="#" class="download" hidden>↓ Download repaired file</a>
+</section>
+<footer><span>Downwell Record · Private by design · No ads or trackers</span><span>Use for content you have permission to record.</span></footer>
+</div>
+<script>
+window.setTimeout(() => {
+  if (!window.__DOWNWELL_V2_READY) {
+    const notice=document.getElementById("notice");
+    if (notice){notice.textContent="The updated recorder engine could not load. Check your connection and refresh. Do not start recording with the old version.";notice.classList.add("error");}
+    document.getElementById("start").disabled=true;
+  }
+},12000);
+</script>
+<script type="module" src="./recorder-v2.js?v=3_20261103_1254"></script>
+
+</body>
+</html>
