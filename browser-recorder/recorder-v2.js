@@ -120,10 +120,14 @@ async function verifyRecording(file,elapsed,state){
     audio=await input.getPrimaryAudioTrack();
     // First check container metadata; compute from packets only if necessary.
     metaDuration=await input.getDurationFromMetadata();
-    if(!(Number.isFinite(metaDuration)&&metaDuration>0)){
+    // Some containers report only the first fragment's duration. Inspect the
+    // packets if metadata is missing or far shorter than the recording clock.
+    if(!(Number.isFinite(metaDuration)&&metaDuration>=1.25) ||
+       (elapsed>=5 && metaDuration<elapsed*0.65)){
       measuredDuration=await input.computeDuration();
     }
-    const actual=Number.isFinite(metaDuration)&&metaDuration>0?metaDuration:measuredDuration;
+    const actual=Number.isFinite(measuredDuration)&&measuredDuration>0
+      ?measuredDuration:metaDuration;
     if(elapsed<1.5){
       reason="Chrome recorded for less than two seconds. Sharing likely ended immediately or the recorder was stopped before it began.";
     }else if(state.mode==="video"&&!video){
