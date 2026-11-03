@@ -167,7 +167,7 @@ style="width:100%;padding:16px">
 </div>
 <p class="eyebrow">QUALITY</p>
 <select name="quality">
-<option value="fast">Fast 480p — small file (may use AV1)</option>
+<option value="fast">Fast 360p — reliable H.264, smallest file</option>
 <option value="720">Up to 720p — sharper video</option>
 <option value="480">Up to 480p — H.264 when possible</option>
 <option value="360">Up to 360p — smallest file</option>
@@ -383,7 +383,7 @@ def relay_media_url(raw):
 
 RELAY_CHUNK = 1024 * 1024
 RELAY_CONCURRENCY = 3
-RELAY_RETRIES = 4
+RELAY_RETRIES = 5
 _client_local = threading.local()
 
 def relay_client():
@@ -458,12 +458,12 @@ def parallel_relay_download(key,folder,selections,combined_size):
             paths[label]=dest
             for begin in range(0,expected,RELAY_CHUNK):
                 end=min(begin+RELAY_CHUNK,expected)-1
-                jobs_to_fetch.append((label,url,begin,end,expected))
+                jobs_to_fetch.append((label,url,relay_media_url(fmt.get("url")),begin,end,expected))
         total_parts=len(jobs_to_fetch)
         completed=[0]
 
         def fetch_chunk(item):
-            label,url,begin,end,expected=item
+            label,url,origin_url,begin,end,expected=item
             need=end-begin+1
             last_error="Unknown transfer failure"
             for attempt in range(RELAY_RETRIES):
@@ -497,7 +497,12 @@ def parallel_relay_download(key,folder,selections,combined_size):
                     return
                 except (requests.RequestException,RuntimeError,OSError) as exc:
                     last_error=str(exc)[:130]
-                    if attempt+1<RELAY_RETRIES:time.sleep(0.35*(attempt+1))
+                    if attempt+1<RELAY_RETRIES:
+                        if "HTTP 403" in str(exc):
+                            # Try another signed relay companion on 403.
+                            try:url=resolve_relay_url(origin_url)
+                            except Exception:pass
+                        time.sleep(0.6*(attempt+1))
             raise RuntimeError(f"Couldn't retrieve {label} segment {begin//RELAY_CHUNK+1} after {RELAY_RETRIES} attempts: {last_error}")
         with ThreadPoolExecutor(max_workers=RELAY_CONCURRENCY,thread_name_prefix="range") as pool:
             futures=[pool.submit(fetch_chunk,item) for item in jobs_to_fetch]
@@ -536,7 +541,7 @@ def relay_process(key,folder,video_id,kind,quality,title):
     audio=audios[0]
     video=None
     if kind=="video":
-        max_h = 480 if quality=="fast" else (1080 if quality=="best" else int(quality))
+        max_h = 360 if quality=="fast" else (1080 if quality=="best" else int(quality))
         videos=[f for f in fmts if str(f.get("type","")).startswith("video/mp4") and
                 f.get("url","").startswith(RELAY_ORIGIN+"/videoplayback?")]
         def height(f):
@@ -545,15 +550,12 @@ def relay_process(key,folder,video_id,kind,quality,title):
         videos=[f for f in videos if 0<height(f)<=max_h and int(f.get("clen") or 0)>0]
         # Prefer editing-friendly H.264 at each resolution; use compact AV1
         # when Fast was requested or when H.264 exceeds the size cap.
-        if quality=="fast":
-            videos.sort(key=lambda f:(-height(f),int(f.get("clen"))))
-        else:
-            videos.sort(key=lambda f:(-height(f),0 if "avc1" in f.get("type","") else 1,int(f.get("clen"))))
+        videos.sort(key=lambda f:(-height(f),0 if "avc1" in f.get("type","") else 1,int(f.get("clen"))))
         audio_size=int(audio.get("clen") or 0)
         video=next((f for f in videos if int(f.get("clen"))+audio_size<=RELAY_LIMIT),None)
         if not video:
             raise RuntimeError("This video exceeds the 150 MB relay limit even in its smallest format. Try MP3.")
-        change(key,progress=3,message=f"Selected {video.get('qualityLabel','MP4')} within 150 MB — preparing fast download...")
+        change(key,progress=3,message=f"Selected {video.get('qualityLabel','MP4')} / {int(video.get('clen'))/1048576:.0f} MB picture + {audio_size/1048576:.0f} MB audio — preparing...")
     selections=[("audio",audio)]
     if video:selections.insert(0,("video",video))
     try:combined_size=sum(int(f.get("clen") or 0) for _,f in selections)
@@ -591,7 +593,7 @@ def worker(key,url,kind,quality,video_id,title,client,relay=False):
             return
         if kind=="audio":fmt="bestaudio/best"
         elif quality=="best":fmt="bv[ext=mp4]+ba[ext=m4a]/bv+ba/best"
-        elif quality=="fast":fmt="bv[height<=480][ext=mp4]+ba[ext=m4a]/bv[height<=480]+ba/b[height<=480]"
+        elif quality=="fast":fmt="bv[height<=360][ext=mp4]+ba[ext=m4a]/bv[height<=360]+ba/b[height<=360]"
         else:
             q=int(quality);fmt="bv[height<="+str(q)+"][ext=mp4]+ba[ext=m4a]/bv[height<="+str(q)+"]+ba/b[height<="+str(q)+"]"
         def hook(data):
