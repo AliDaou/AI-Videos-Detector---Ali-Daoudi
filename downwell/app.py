@@ -152,6 +152,17 @@ DIRECT = """<!doctype html><html lang="en"><head><meta charset="UTF-8">
 <div class="panel">
 {% if not job %}
 <form action="/direct/download" method="post">
+{% if managed_ready %}
+<div style="padding:17px;background:#baff8214;border:1px solid #baff8266;border-radius:13px;margin-bottom:16px">
+<p class="eyebrow" style="color:#c5ff9e">DOWNLOAD SOURCE</p>
+<label style="display:block;margin-bottom:11px;font-size:14px"><input type="radio" name="backend" value="managed" checked> <strong>Direct cloud download (recommended)</strong></label>
+<label style="display:block;font-size:14px"><input type="radio" name="backend" value="relay"> Community relay (limited reliability)</label>
+<p class="small" style="margin-bottom:0">Managed downloads use an external provider and its account credits; videos download directly to your browser rather than through Render.</p></div>
+{% else %}
+<div style="padding:15px;border:1px solid #3d5057;border-radius:12px;margin-bottom:18px">
+<p class="eyebrow">DIRECT DOWNLOAD BACKEND</p>
+<p class="small" style="margin-top:0">Not connected yet. Public community relays often reject long videos. To activate direct browser downloads, add your <code>TUNELIO_API_KEY</code> in Render’s Environment settings (server-side only). <a href="https://tunelio.dev/docs/" style="color:#baff82">Provider details</a>. A free trial is advertised; availability and reliability are not independently verified.</p></div>
+{% endif %}
 <div style="padding:15px 18px;border:1px solid #4c6248;background:#baff820b;border-radius:12px;margin-bottom:24px">
 <label style="display:flex;gap:10px;align-items:start;font-size:14px;line-height:1.5">
 <input type="checkbox" name="relay" value="yes" checked style="margin-top:4px">
@@ -203,9 +214,62 @@ style="width:100%;padding:16px">
 <footer class="footer"><span>Private access. No ads or third-party converters.</span></footer>
 </main></body></html>"""
 
+
+# Optional managed service: direct signed media URLs, no streaming through Render.
+# Keep the key in an environment secret, never send it to the browser.
+MANAGED_RESULT = """<!doctype html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Downwell | Your direct download</title><style>""" + STYLE + """</style></head>
+<body><main class="wrap" style="max-width:680px">
+<nav><div class="brand">downwell<b>.</b></div><span class="pill">DIRECT DOWNLOAD</span></nav>
+<section class="hero" style="padding-top:42px">
+<p class="overline">YOUR LINK IS READY</p><h1>Download <em>directly.</em></h1>
+<p class="sub">Your file is available from the media provider. It does not pass through the Render server.</p>
+</section><div class="panel">
+<h2>{{ filename }}</h2>
+<a class="action" href="{{ link }}" rel="nofollow noreferrer">↓ Open direct download</a>
+<p class="small">A signed third-party link; it may expire. If your browser plays the video instead of downloading, use the browser’s Save As option.</p>
+<p><a href="/direct" style="color:#baff82">← Download another video</a></p>
+</div></main></body></html>"""
+
+def managed_download_link(video_url,kind,quality):
+    """Return only a verified HTTPS tunnel URL from the configured API provider."""
+    chosen="mp3" if kind=="audio" else (
+        {"fast":"360p","best":"1080p","360":"360p","480":"480p",
+         "720":"720p","1080":"1080p"}.get(quality,"360p"))
+    try:
+        response=requests.get(
+            "https://tunelio.dev/create",
+            params={"url":video_url,"quality":chosen},
+            headers={"Authorization":"Bearer "+MANAGED_API_KEY,
+                     "Accept":"application/json"},
+            timeout=(7,35),allow_redirects=False
+        )
+    except requests.RequestException:
+        raise RuntimeError("The direct-download provider is not responding. Please try again or use the community relay.")
+    if response.status_code!=200:
+        # Avoid reflecting service-controlled error bodies or the API key to the UI.
+        raise RuntimeError("The direct-download provider declined this request (HTTP "+
+                           str(response.status_code)+"). Check account credits and video support.")
+    if len(response.content)>65536:
+        raise RuntimeError("The provider returned an unexpectedly large response.")
+    try:
+        result=response.json()
+        url=result.get("url") or ""
+        filename=str(result.get("filename") or "Video download")[:180]
+    except Exception:
+        raise RuntimeError("The provider returned an invalid response.")
+    parsed=urlsplit(url)
+    hostname=(parsed.hostname or "").lower()
+    if parsed.scheme!="https" or (hostname!="tunelio.dev" and
+       not hostname.endswith(".tunelio.dev")) or not parsed.path.startswith("/tunnel") or \
+       parsed.username or parsed.password or parsed.port not in (None,443):
+        raise RuntimeError("The provider returned an unsupported download address.")
+    return url,filename
+
 @app.get("/direct")
 def direct_page():
-    return render_template_string(DIRECT,job=None,error=None,form={})
+    return render_template_string(DIRECT,job=None,error=None,form={},managed_ready=bool(MANAGED_API_KEY))
 
 @app.post("/direct/download")
 def direct_download():
@@ -218,10 +282,18 @@ def direct_download():
         if kind not in ("video","audio") or quality not in QUALITIES or client not in YOUTUBE_CLIENTS:
             raise ValueError("Unsupported format or connection option.")
     except ValueError as e:
-        return render_template_string(DIRECT,job=None,error=str(e),form=form),400
+        return render_template_string(DIRECT,job=None,error=str(e),form=form,managed_ready=bool(MANAGED_API_KEY)),400
+    if form.get("backend")=="managed":
+        if not MANAGED_API_KEY:
+            return render_template_string(DIRECT,job=None,error="Direct download backend is not connected. Add your provider API key in Render Environment settings.",form=form,managed_ready=False),400
+        try:
+            link,filename=managed_download_link(url,kind,quality)
+            return render_template_string(MANAGED_RESULT,link=link,filename=filename)
+        except Exception as exc:
+            return render_template_string(DIRECT,job=None,error=str(exc)[:220],form=form,managed_ready=True),502
     purge()
     if not slots.acquire(blocking=False):
-        return render_template_string(DIRECT,job=None,error="Two downloads are already running. Try again shortly.",form=form),429
+        return render_template_string(DIRECT,job=None,error="Two downloads are already running. Try again shortly.",form=form,managed_ready=bool(MANAGED_API_KEY)),429
     key=uuid.uuid4().hex
     with guard:
         jobs[key]={"created":time.time(),"status":"queued","progress":0,"message":"Preparing..."}
@@ -235,8 +307,8 @@ def direct_status(key):
         job=jobs.get(key)
         job=dict(job) if job else None
     if not job:
-        return render_template_string(DIRECT,job=None,error="This download expired or the server restarted. Please try again.",form={}),404
-    return render_template_string(DIRECT,job=job,job_id=key,error=None,form={})
+        return render_template_string(DIRECT,job=None,error="This download expired or the server restarted. Please try again.",form={},managed_ready=bool(MANAGED_API_KEY)),404
+    return render_template_string(DIRECT,job=job,job_id=key,error=None,form={},managed_ready=bool(MANAGED_API_KEY))
 
 
 def normal_url(value):
@@ -372,6 +444,7 @@ def info():
 
 
 RELAY_ORIGIN = "https://yt.chocolatemoo53.com"
+MANAGED_API_KEY = os.environ.get("TUNELIO_API_KEY","").strip()
 RELAY_LIMIT = 150 * 1024 * 1024  # Respect community bandwidth and free-tier limits.
 
 def relay_media_url(raw):
