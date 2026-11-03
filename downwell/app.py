@@ -681,6 +681,7 @@ def downwell_sequential_range_probe():
         original=fmt["url"]
         signed=resolve_relay_url(original)
         for start in (0,1048576,2097152,3145728):
+            time.sleep(2.0)
             with open_relay_stream(signed,(start,start+1023)) as r:
                 app.logger.warning("SERIAL_RANGE_TEST byte=%d HTTP=%d range=%s",
                     start,r.status_code,r.headers.get("content-range"))
