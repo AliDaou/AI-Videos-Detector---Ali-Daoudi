@@ -73,7 +73,7 @@ function tick(){
   const seconds=elapsed/1000;
   const count=active.videoFrames || 0;
   const last=active.lastVideoFrameAt || startTime;
-  if(mode==="video" && seconds>9 && (count<3 || performance.now()-last>9000)){
+  if(mode==="video" && seconds>5 && (count<3 || performance.now()-last>6000)){
     el("liveTag").textContent="⚠ CHECK VIDEO";
     if(!active.warned) {
       show("Warning: very few video frames are reaching the encoder. The saved file could show a frozen picture. Check that you selected the playing YouTube tab, not the recorder tab. Try a 10-second test first.",true);
@@ -235,6 +235,9 @@ async function startRecording(){
   }
   removeUrl();
   let display=null,microphone=null,audioCtx=null,mixed=null,writable=null;
+  el("clock").textContent="00:00";el("bytes").textContent="0 frames";
+  el("copyReport").hidden=true;el("copyReport").textContent="Copy diagnostic report";
+  el("reportPreview").textContent="";el("reportPreview").hidden=true;
   el("start").disabled=true;
   try{
     show("Choose Chrome Tab, select the YouTube video tab, and turn on Share tab audio.");
@@ -273,6 +276,9 @@ async function startRecording(){
     const state={
       display,mic:microphone,mixed,audioCtx,output:out,writable,filename,mode,
       videoFrames:0,audioPackets:0,lastVideoFrameAt:performance.now(),warned:false,
+      session:++recordingNumber,stopReason:"manual",
+      sharedSurface:settings.displaySurface||"unknown",videoMuteCount:0,
+      lastVideoPacketSeconds:0,lastAudioPacketSeconds:0,
       videoSource:null,audioSource:null,started:false,format:mp4?"mp4":"webm"
     };
     if(mode==="video"){
@@ -283,13 +289,14 @@ async function startRecording(){
         quality:new Quality({bitrate}),
         keyFrameInterval:2,
         latencyMode:"realtime",
-        onEncodedPacket:()=>{
+        onEncodedPacket:(packet)=>{
           state.videoFrames++;
+          state.lastVideoPacketSeconds=Math.max(state.lastVideoPacketSeconds,packet.timestamp+Math.max(0,packet.duration));
           state.lastVideoFrameAt=performance.now();
         }
       });
       videoSource.errorPromise.catch(e=>{
-        if(active===state){show("Video encoder stopped: "+e.message+". Saving the captured portion.",true);stopRecording();}
+        if(active===state){state.stopReason="Video encoder error: "+e.message;show("Video encoder failed: "+e.message,true);stopRecording("video-encoder-error");}
       });
       state.videoSource=videoSource;
       out.addVideoTrack(videoSource);
@@ -297,10 +304,13 @@ async function startRecording(){
     const audioSource=new MediaStreamAudioTrackSource(audioTrack,{
       codec:mp4?"aac":"opus",
       quality:new Quality({bitrate:160000}),
-      onEncodedPacket:()=>{state.audioPackets++;}
+      onEncodedPacket:(packet)=>{
+        state.audioPackets++;
+        state.lastAudioPacketSeconds=Math.max(state.lastAudioPacketSeconds,packet.timestamp+Math.max(0,packet.duration));
+      }
     });
     audioSource.errorPromise.catch(e=>{
-      if(active===state){show("Audio encoder stopped: "+e.message+". Saving the captured portion.",true);stopRecording();}
+      if(active===state){state.stopReason="Audio encoder error: "+e.message;show("Audio encoder failed: "+e.message,true);stopRecording("audio-encoder-error");}
     });
     state.audioSource=audioSource;
     out.addAudioTrack(audioSource);
@@ -309,7 +319,16 @@ async function startRecording(){
     state.started=true;
     el("player").srcObject=display;el("empty").hidden=true;el("player").hidden=false;
     el("player").play().catch(()=>{});
-    videoTrack.onended=()=>{if(active===state)stopRecording();};
+    videoTrack.addEventListener("ended",()=>{
+      if(active===state){state.stopReason="Chrome ended screen sharing";stopRecording("share-ended");}
+    },{once:true});
+    videoTrack.addEventListener("mute",()=>{if(active===state)state.videoMuteCount++;});
+    tabAudio.addEventListener("ended",()=>{
+      if(active===state&&!saving){
+        state.stopReason="Shared tab audio ended";
+        show("Chrome stopped sending tab audio. Stop and start a new recording with Share tab audio enabled.",true);
+      }
+    },{once:true});
     unlock(true);
     beginTimer();
     el("preview").classList.add("live");
@@ -327,39 +346,60 @@ async function startRecording(){
          "Recording couldn't start: "+(e.message||String(e)),true);
   }
 }
-async function stopRecording(){
+async function stopRecording(reason="button"){
   if(!active||saving)return;
   const state=active;
+  if(!state.stopReason||state.stopReason==="manual"){
+    state.stopReason=reason==="button"?"User pressed Stop":
+                     reason==="share-ended"?"Chrome ended screen sharing":reason;
+  }
   saving=true;
   el("stop").disabled=true;el("pause").disabled=true;
   el("liveTag").textContent="FINALIZING";
-  show("Finalizing the file and writing duration/seek metadata. Don't close this tab.");
-  const elapsed=(performance.now()-startTime-pausedMs-(pausedAt?performance.now()-pausedAt:0))/1000;
+  show("Finalizing and validating the recording. Do not close this tab.");
+  const elapsed=Math.max(0,(performance.now()-startTime-pausedMs-(pausedAt?performance.now()-pausedAt:0))/1000);
   try{
     await state.output.finalize();
-    let file;
+    let file=null;
     if(state.writable){
+      // Mediabunny closes the stream on finalize, leaving a seekable file.
       file=await fileHandle.getFile();
-      el("download").hidden=true;
-      show("Saved to "+state.filename+". Checking playable video/audio tracks...");
     }else{
       const buffer=state.output.target.buffer;
-      if(!buffer?.byteLength)throw Error("No recording data was produced.");
-      file=autoDownload(buffer,state.format==="mp4"?"video/mp4":mode==="audio"?"audio/webm":"video/webm",state.filename);
+      if(!buffer?.byteLength)throw Error("The recorder produced no video/audio data.");
+      file=new Blob([buffer],{type:state.format==="mp4"?"video/mp4":state.mode==="audio"?"audio/webm":"video/webm"});
     }
-    if(!state.writable && file.size>120*1024*1024){
-      show("Large recording saved. Use Choose where to save for long videos to reduce memory usage.",true);
-    }
-    await verifyRecording(file,elapsed,state.videoFrames);
-    if(state.format==="webm" && state.videoFrames<3 && elapsed>5){
-      el("repairStatus").textContent="The file has too few encoded video frames. Repair can fix seeking, but cannot recreate missing motion.";
+    const result=await verifyRecording(file,elapsed,state);
+    reportFor(state,elapsed,result);
+    if(!result.ok){
+      if(state.writable){
+        show("Incomplete recording: "+result.reason+
+          " The partial file is on disk as "+state.filename+
+          ". A new filename is required next time, so this one will not be overwritten. Copy the diagnostic report if it repeats.",true);
+      }else{
+        // Never automatically download a one-second or otherwise invalid file.
+        offerDownload(file,state.filename,false);
+        show("Recording incomplete: "+result.reason+
+          " No broken file was automatically downloaded. You may save the partial recording manually or start again. Copy the diagnostic report if it repeats.",true);
+      }
+    }else{
+      if(!state.writable)offerDownload(file,state.filename,true);
+      show("Recording verified: "+bytesText(file.size)+" · "+fmtTime(result.actual)+" · "+
+           (result.hasVideo?"video + ":"")+"audio. "+
+           (state.writable?"Saved to "+state.filename+". ":"Download started. ")+
+           "Use a new filename for your next clip.");
     }
   }catch(e){
-    if(state.writable)try{await state.writable.abort();}catch(_){}
-    show("Failed to finalize recording: "+(e.message||String(e)),true);
+    reportFor(state,elapsed,{ok:false,reason:String(e.message||e),actual:0,bytes:0});
+    try{if(state.writable)await state.writable.abort();}catch(_){}
+    show("Recording could not be finalized: "+(e.message||String(e))+
+         ". Copy the diagnostic report and try a new tab share.",true);
   }finally{
     stopTracks(state);
     active=null;
+    // Don't silently overwrite the same saved file on the next recording.
+    fileHandle=null;
+    resetFile();
     el("sound").textContent="Waiting";
     finishButtons();
   }
@@ -381,7 +421,7 @@ function pauseRecording(){
   }catch(e){show("Pause/resume failed: "+e.message,true);}
 }
 el("start").addEventListener("click",startRecording);
-el("stop").addEventListener("click",stopRecording);
+el("stop").addEventListener("click",()=>stopRecording("button"));
 el("pause").addEventListener("click",pauseRecording);
 el("repairFile").addEventListener("change",()=>{
   const file=el("repairFile").files?.[0];
