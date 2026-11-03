@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0a0e12">
-<title>Downwell Record — Browser Screen & Audio Recorder</title>
+<title>Downwell Record 2 — Seekable Screen & Audio Recorder</title>
 <meta name="description" content="Capture a Chrome tab with sound and save video clips directly to your computer. No installs, ads or uploads.">
 <style>
 :root {color-scheme:dark;--bg:#090d11;--surface:#141b20;--surface2:#192229;--border:#2b383c;--muted:#9eb0b4;--text:#f3f8f7;--accent:#b4fb77;--accent-dark:#213728;--danger:#ff9b91}
@@ -65,7 +65,7 @@ code{color:#c9f2bb}
 <body>
 <div class="wrap">
 <nav><div class="brand">downwell<b>.</b> <span style="font-size:13px;color:#92ae9d;font-weight:700;letter-spacing:0">RECORD</span></div><div class="status">● ON-DEVICE RECORDING</div></nav>
-<header class="hero"><div class="kicker">✦ ONE CLICK. ALL YOUR CLIPS.</div><h1>Record the screen.<br><strong>Capture the sound.</strong></h1><p class="sub">No downloader, no YouTube bot checks, no software installation. Capture a Chrome tab with its audio and save the recording straight to your computer.</p>
+<header class="hero"><div class="kicker">✦ ONE CLICK. ALL YOUR CLIPS.</div><h1>Record the screen.<br><strong>Capture the sound.</strong></h1><p class="sub">No downloader, no YouTube bot checks, no software installation. Capture the tab and sound, then save a seekable, editable video file directly to your PC.</p>
 <div class="steps"><div class="step">① Open the video in Chrome</div><div class="step">② Share tab + audio</div><div class="step">③ Hit stop and save</div></div></header>
 <main class="layout">
 <section class="panel" aria-label="Recording controls">
@@ -86,16 +86,16 @@ code{color:#c9f2bb}
 <div class="group">
 <p class="eyebrow">03 / FILE FORMAT</p>
 <select id="format" aria-label="Recording format">
-<option value="webm" selected>WebM · Works in Chrome</option>
-<option value="mp4">MP4 · When browser supports it</option>
+<option value="webm" selected>Seekable WebM · Recommended</option>
+<option value="mp4">MP4 (H.264/AAC) · When supported</option>
 </select>
-<p class="muted" id="formatHint">WebM records quickly and is compatible with many editors. MP4 depends on browser encoding support.</p>
+<p class="muted" id="formatHint">WebM has proper duration and seek metadata in this version. MP4 depends on browser encoding support.</p>
 <label class="option"><input type="checkbox" id="mic"> Include my microphone (optional)</label>
 </div>
 <hr>
 <p class="eyebrow">04 / SAVING</p>
 <button id="choose" type="button" class="secondary">▤ Choose where to save (recommended)</button>
-<p id="fileStatus" class="muted">If you skip this, the recording is held in browser memory until you stop. Choosing a file saves continuously and is safer for longer clips.</p>
+<p id="fileStatus" class="muted">For long videos, choose a file before Start. The site writes progressively to disk, then finalizes duration/seek metadata when you stop.</p>
 <hr>
 <button id="start" type="button" class="primary">● Start recording</button>
 <div class="rowButtons">
@@ -109,223 +109,35 @@ code{color:#c9f2bb}
 <p class="eyebrow">LIVE PREVIEW</p>
 <div class="preview" id="preview">
 <div class="corner" id="liveTag">STANDBY</div>
-<div class="empty" id="empty"><div class="glyph">▣</div><strong>Your screen will appear here</strong><span>The preview is muted to avoid echo.</span></div>
+<div class="empty" id="empty"><div class="glyph">▣</div><strong>Your screen will appear here</strong><span>Watch this preview briefly to confirm that the moving picture is captured. It is muted to avoid echo.</span></div>
 <video id="player" autoplay muted playsinline hidden></video>
 </div>
 <div class="metrics">
 <div class="metric"><small>DURATION</small><strong id="clock">00:00</strong></div>
 <div class="metric"><small>SOUND</small><strong id="sound">Waiting</strong></div>
-<div class="metric"><small>CAPTURED</small><strong id="bytes">0 MB</strong></div>
+<div class="metric"><small>VIDEO FRAMES</small><strong id="bytes">0 frames</strong></div>
 </div>
 <div class="help">
 <b>How to capture YouTube sound</b>
-<p>Open the video in a separate Chrome tab. Click Start, select the <strong>Chrome Tab</strong> category, select the video tab, and check <strong>Share tab audio</strong>. Then play the video. Stop when your clip is finished.</p>
+<p>Open the YouTube video in a separate Chrome tab. Press Start, choose <strong>Chrome Tab</strong> (not Window/Entire Screen), select the actual playing video tab, and enable <strong>Share tab audio</strong>. Check the moving preview and frame counter before recording the entire video. Stop to finalize.</p>
 </div>
-<p class="caption" style="margin-top:17px">Your recording stays in this browser and is saved directly to your computer. The site receives no audio, video or screen contents. Recording stops if you close this tab. Some protected content may appear black or silent.</p>
+<p class="caption" style="margin-top:17px">Your recording never uploads to this website. Chrome grants access only to the tab you select. Seekable WebM and MP4 files are finalized locally on your device. Screen sharing stops if you close the recorder. If Chrome does not capture actual video frames, remuxing cannot recreate them.</p>
 </section>
 </main>
+<section class="panel" style="margin-top:22px" aria-label="Repair your previous recording">
+<p class="eyebrow">FIX A PREVIOUS RECORDING · NO UPLOADS</p>
+<h2 style="font-size:25px;letter-spacing:-.8px;margin:0 0 9px">Old recording won't seek?</h2>
+<p class="sub" style="font-size:14px">Select the broken WebM or MP4 file. The recorder will attempt to rebuild its duration and seek index <strong>entirely in your browser</strong>, leaving the original untouched. This can fix an unseekable timeline, but it cannot restore missing video frames.</p>
+<div style="display:flex;gap:13px;align-items:center;flex-wrap:wrap;margin:17px 0">
+<input id="repairFile" type="file" accept=".webm,.mp4,video/webm,video/mp4" aria-label="Select broken recording" style="flex:1;min-width:220px;font:inherit;color:#c1d6c8;padding:12px;border:1px solid #405a4b;border-radius:10px">
+<button id="repairButton" class="secondary" type="button" style="width:auto;min-width:175px" disabled>Repair & make seekable</button>
+</div>
+<p id="repairStatus" class="notice" aria-live="polite">Your file is read locally. No uploads or server conversion.</p>
+<a id="repairDownload" href="#" class="download" hidden>↓ Download repaired file</a>
+</section>
 <footer><span>Downwell Record · Private by design · No ads or trackers</span><span>Use for content you have permission to record.</span></footer>
 </div>
-<script>
-(function(){
-"use strict";
-const get=id=>document.getElementById(id);
-const modeButtons=Array.from(document.querySelectorAll("[data-mode]"));
-let mode="video",fileHandle=null,writer=null,recorder=null,source=null,micSource=null,mixed=null,context=null,combinedTracks=null;
-let blobs=[],writeQueue=Promise.resolve(),writeError=null,currentUrl=null,ext="webm",fileName="",recordStart=0,pausedAt=0,pausedSum=0,totalBytes=0,tickHandle=null,finishing=false,recording=false;
-const supported=!!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia && window.MediaRecorder);
-const supportedMp4=!!(window.MediaRecorder && MediaRecorder.isTypeSupported("video/mp4;codecs=avc1.42E01E,mp4a.40.2"));
-if(!supportedMp4){get("format").querySelector('option[value="mp4"]').disabled=true;get("formatHint").textContent="MP4 encoding is not available in this browser. WebM will record screen and audio without conversion.";}
-if(!supported){get("start").disabled=true;get("choose").disabled=true;setNotice("This browser cannot record screens. Open this site in an up-to-date Chrome or Edge browser over HTTPS.",true);}
-function setNotice(text,bad){get("notice").textContent=text;get("notice").classList.toggle("error",!!bad);}
-function size(n){if(!n)return "0 MB";return (n/1048576).toFixed(1)+" MB";}
-function elapsed(){const now=performance.now();return Math.max(0,now-recordStart-pausedSum-(pausedAt?now-pausedAt:0));}
-function tick(){let n=Math.floor(elapsed()/1000);get("clock").textContent=String(Math.floor(n/60)).padStart(2,"0")+":"+String(n%60).padStart(2,"0");get("bytes").textContent=size(totalBytes);}
-function resetFile(){fileHandle=null;get("fileStatus").textContent="No save location selected. For longer recordings, choose a file to avoid holding the entire video in memory.";}
-function selectedMime(){
-  if(mode==="audio"){
-    return MediaRecorder.isTypeSupported("audio/webm;codecs=opus")?"audio/webm;codecs=opus":"audio/webm";
-  }
-  if(get("format").value==="mp4" && supportedMp4){return "video/mp4;codecs=avc1.42E01E,mp4a.40.2";}
-  for(const v of ["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"]){if(MediaRecorder.isTypeSupported(v))return v;}
-  return "";
-}
-function selectedExt(){return mode==="video" && get("format").value==="mp4" && supportedMp4 ? "mp4":"webm";}
-function lockControls(disabled){get("quality").disabled=disabled;get("format").disabled=disabled;get("mic").disabled=disabled;get("choose").disabled=disabled;modeButtons.forEach(x=>x.disabled=disabled);}
-modeButtons.forEach(button=>button.addEventListener("click",()=>{
-  if(recording||finishing)return;
-  mode=button.dataset.mode;
-  modeButtons.forEach(x=>x.dataset.active=String(x===button));
-  get("quality").disabled=mode==="audio";get("format").disabled=mode==="audio";
-  resetFile();
-  setNotice(mode==="audio"?"Audio-only still requires sharing a Chrome tab with Share tab audio enabled.":"Choose a Chrome tab and turn on Share tab audio.");
-}));
-get("format").addEventListener("change",resetFile);
-get("quality").addEventListener("change",resetFile);
-get("choose").addEventListener("click",async()=>{
-  if(!window.showSaveFilePicker){
-    setNotice("This browser does not offer direct disk writing. You can still record and save when you press Stop; use shorter clips to avoid memory issues.",true);
-    return;
-  }
-  ext=selectedExt();
-  const filename="Downwell-Recording-"+new Date().toISOString().replace(/[:.]/g,"-")+"."+ext;
-  try{
-    const handle=await showSaveFilePicker({suggestedName:filename,types:[{description:ext.toUpperCase()+" recording",accept:{[ext==="mp4"?"video/mp4":"video/webm"]:["."+ext]}}]});
-    fileHandle=handle;
-    fileName=handle.name;
-    get("fileStatus").textContent="Selected: "+fileName+" — data will be saved directly to this file as you record.";
-    setNotice("Save location selected. Press Start, then choose the Chrome tab and enable Share tab audio.");
-  }catch(e){if(e.name!=="AbortError")setNotice("Could not choose the destination: "+e.message,true);}
-});
-function cleanup(){
-  if(tickHandle){clearInterval(tickHandle);tickHandle=null;}
-  try{if(source)source.getTracks().forEach(t=>t.stop());}catch(e){}
-  try{if(micSource)micSource.getTracks().forEach(t=>t.stop());}catch(e){}
-  try{if(mixed)mixed.getTracks().forEach(t=>t.stop());}catch(e){}
-  if(context){context.close().catch(()=>{});context=null;}
-  source=null;micSource=null;mixed=null;combinedTracks=null;
-  get("player").srcObject=null;get("player").hidden=true;get("empty").hidden=false;
-  get("preview").classList.remove("live");get("liveTag").textContent="STANDBY";
-  get("sound").textContent="Waiting";
-}
-function pickBits(){
- const q=get("quality").value;
- return q==="standard"?2500000:q==="max"?8500000:5000000;
-}
-function closePreviousBlob(){if(currentUrl){URL.revokeObjectURL(currentUrl);currentUrl=null;}}
-async function startCapture(){
- if(!supported||recording||finishing)return;
- if(fileHandle && fileName.split(".").pop()!==selectedExt()){resetFile();}
- get("start").disabled=true;get("download").hidden=true;
- closePreviousBlob();
- blobs=[];writeError=null;writeQueue=Promise.resolve();totalBytes=0;pausedSum=0;pausedAt=0;tick();
- ext=selectedExt();
- fileName=fileHandle?fileHandle.name:("Downwell-"+new Date().toISOString().replace(/[:.]/g,"-")+"."+ext);
- let display=null;
- try{
-   setNotice("Choose a Chrome tab, select the video, and turn on Share tab audio...");
-   display=await navigator.mediaDevices.getDisplayMedia({
-     video:{frameRate:{ideal:30,max:30}},
-     audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},
-     systemAudio:"include",surfaceSwitching:"include",selfBrowserSurface:"exclude"
-   });
-   const audios=display.getAudioTracks();
-   if(!audios.length){
-     display.getTracks().forEach(t=>t.stop());
-     throw new Error("No audio was shared. Try again and select Chrome Tab → turn on Share tab audio.");
-   }
-   source=display;
-   if(get("mic").checked){
-     micSource=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
-     context=new (window.AudioContext||window.webkitAudioContext)();
-     const dest=context.createMediaStreamDestination();
-     const tabStream=new MediaStream(audios);
-     context.createMediaStreamSource(tabStream).connect(dest);
-     context.createMediaStreamSource(micSource).connect(dest);
-     combinedTracks=dest.stream.getAudioTracks();
-   }else{
-     combinedTracks=audios;
-   }
-   const tracks=mode==="video" ? [...display.getVideoTracks(),...combinedTracks] : [...combinedTracks];
-   mixed=new MediaStream(tracks);
-   const mime=selectedMime();
-   const params={};
-   if(mime)params.mimeType=mime;
-   params.audioBitsPerSecond=160000;
-   if(mode==="video")params.videoBitsPerSecond=pickBits();
-   recorder=new MediaRecorder(mixed,params);
-   ext=recorder.mimeType.startsWith("video/mp4")?"mp4":"webm";
-   if(fileHandle){
-      writer=await fileHandle.createWritable();
-   } else writer=null;
-   recorder.ondataavailable=(event)=>{
-     if(!event.data||!event.data.size)return;
-     totalBytes+=event.data.size;
-     get("bytes").textContent=size(totalBytes);
-     if(writer){
-       const packet=event.data;
-       writeQueue=writeQueue.then(()=>writer.write(packet)).catch(e=>{writeError=e;});
-     }else{
-       blobs.push(event.data);
-     }
-   };
-   recorder.onerror=e=>{setNotice("Recording error: "+(e.error?.message||"Unknown error"),true);};
-   recorder.onstop=finalize;
-   const screenTrack=display.getVideoTracks()[0];
-   if(screenTrack)screenTrack.onended=()=>{if(recorder && recorder.state!=="inactive")stopCapture();};
-   get("player").srcObject=display;get("player").hidden=false;get("empty").hidden=true;
-   get("player").play().catch(()=>{});
-   recorder.start(1000);
-   recordStart=performance.now();recording=true;finishing=false;
-   get("preview").classList.add("live");get("liveTag").textContent="● RECORDING";
-   get("sound").textContent="Captured";
-   get("stop").disabled=false;get("pause").disabled=false;
-   lockControls(true);
-   tickHandle=setInterval(tick,400);
-   tick();
-   setNotice("Recording tab audio. Play the video in the shared tab; return here to Pause or Stop. The preview is muted to prevent feedback.");
- }catch(e){
-   if(display)display.getTracks().forEach(t=>t.stop());
-   if(writer){try{await writer.abort();}catch(x){} writer=null;}
-   cleanup();recording=false;finishing=false;get("start").disabled=false;
-   get("stop").disabled=true;get("pause").disabled=true;lockControls(false);
-   setNotice(e.name==="NotAllowedError"?"Screen sharing was cancelled or blocked. Press Start to choose again.":(e.message||String(e)),true);
- }
-}
-async function finalize(){
- if(finishing)return;
- finishing=true;recording=false;
- if(tickHandle){clearInterval(tickHandle);tickHandle=null;}
- setNotice("Finalizing recording and saving file...");
- get("liveTag").textContent="SAVING";
- cleanup();
- try{
-    await writeQueue;
-    if(writeError)throw writeError;
-    if(writer){
-      await writer.close();writer=null;
-      setNotice("Recording saved to "+fileName+" ("+size(totalBytes)+"). You can record another clip.");
-    }else{
-      const mime=recorder?.mimeType || (mode==="audio"?"audio/webm":"video/webm");
-      const blob=new Blob(blobs,{type:mime});
-      if(!blob.size)throw new Error("The recording is empty.");
-      currentUrl=URL.createObjectURL(blob);
-      const a=get("download");a.href=currentUrl;a.download=fileName;a.hidden=false;
-      a.click();
-      setNotice("Recording is ready ("+size(blob.size)+"). If the download did not begin, click Download your recording below.");
-    }
- }catch(e){
-   if(writer){try{await writer.abort();}catch(x){}writer=null;}
-   setNotice("Could not save the recording: "+(e.message||String(e)),true);
- }finally{
-   blobs=[];recorder=null;finishing=false;recording=false;
-   get("start").disabled=false;get("stop").disabled=true;get("pause").disabled=true;
-   get("pause").textContent="Ⅱ Pause";lockControls(false);
- }
-}
-function stopCapture(){
- if(!recorder || recorder.state==="inactive")return;
- get("stop").disabled=true;get("pause").disabled=true;
- try{recorder.stop();}catch(e){setNotice("Stop failed: "+e.message,true);}
-}
-get("start").addEventListener("click",startCapture);
-get("stop").addEventListener("click",stopCapture);
-get("pause").addEventListener("click",()=>{
- if(!recorder||recorder.state==="inactive")return;
- if(recorder.state==="recording"){
-   recorder.pause();pausedAt=performance.now();get("pause").textContent="▶ Resume";get("liveTag").textContent="PAUSED";
-   setNotice("Paused. The tab remains shared; resume when ready.");
- }else if(recorder.state==="paused"){
-   recorder.resume();pausedSum+=performance.now()-pausedAt;pausedAt=0;
-   get("pause").textContent="Ⅱ Pause";get("liveTag").textContent="● RECORDING";
-   setNotice("Recording resumed.");
- }
- tick();
-});
-window.addEventListener("beforeunload",e=>{
- if(recording||finishing){e.preventDefault();e.returnValue="Recording is in progress. Leaving will discard your current clip.";}
-});
-})();
-</script>
+<script type="module" src="./recorder-v2.js"></script>
+
 </body>
 </html>
