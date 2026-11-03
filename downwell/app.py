@@ -675,7 +675,7 @@ def downwell_range_self_test():
     begin=time.monotonic()
     try:
         folder.mkdir()
-        relay_process("bench",folder,"-NWJh_y-Y6w","video","720","Range benchmark")
+        relay_process("bench",folder,"7_IvsIYlHSg","video","fast","Range benchmark")
         result=folder/"download.mp4"
         if not result.is_file() or result.stat().st_size<1024:raise RuntimeError("No merged MP4 file.")
         probe=subprocess.run(["ffprobe","-v","error","-show_entries","stream=codec_type",
