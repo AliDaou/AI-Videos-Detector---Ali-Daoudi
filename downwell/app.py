@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, parse_qs, urljoin
 from flask import Flask, request, jsonify, render_template_string, send_file, abort, redirect, session
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import yt_dlp
 
 ROOT = Path("/tmp/downwell_jobs")
@@ -141,7 +142,7 @@ catch(e){el('download').disabled=false;error(e.message);}});
 # This alternate UI uses only standard HTML form submissions and redirects.
 DIRECT = """<!doctype html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-{% if job and job.status not in ('ready','error') %}<meta http-equiv="refresh" content="4">{% endif %}
+{% if job and job.status not in ('ready','error') %}<meta http-equiv="refresh" content="2">{% endif %}
 <title>Downwell | Browser-safe downloader</title><style>""" + STYLE + """</style></head>
 <body><main class="wrap" style="max-width:740px">
 <nav><div class="brand">downwell<b>.</b></div><span class="pill">BROWSER-SAFE MODE</span></nav>
@@ -154,8 +155,8 @@ DIRECT = """<!doctype html><html lang="en"><head><meta charset="UTF-8">
 <div style="padding:15px 18px;border:1px solid #4c6248;background:#baff820b;border-radius:12px;margin-bottom:24px">
 <label style="display:flex;gap:10px;align-items:start;font-size:14px;line-height:1.5">
 <input type="checkbox" name="relay" value="yes" checked style="margin-top:4px">
-<span><strong>Try community relay when YouTube blocks this server</strong>
-<span style="display:block;color:#abb8ac;margin-top:5px">Uses a public Invidious instance operated by a third party. Your video ID is shared with that service; no YouTube account or cookies are shared. Limited to 150 MB.</span></span></label></div>
+<span><strong>Fast + resumable mode (recommended)</strong>
+<span style="display:block;color:#abb8ac;margin-top:5px">Downloads in 1 MB pieces with parallel connections and retries. Uses a third-party Invidious relay; your video ID is shared with it. Up to 150 MB.</span></span></label></div>
 <p class="eyebrow">YOUTUBE VIDEO OR SHORTS LINK</p>
 <input type="url" name="url" required maxlength="2048" autocomplete="off"
 placeholder="https://www.youtube.com/watch?v=..." value="{{ form.get('url','') }}"
@@ -165,8 +166,8 @@ style="width:100%;padding:16px">
 <label><input type="radio" name="kind" value="audio" {% if form.get('kind') == 'audio' %}checked{% endif %}> MP3 audio</label>
 </div>
 <p class="eyebrow">QUALITY</p>
-<select name="quality"><option value="best">Best available</option>
-<option value="1080">Up to 1080p</option><option value="720">Up to 720p</option>
+<select name="quality"><option value="720">720p — fastest good quality (recommended)</option><option value="best">Best available (slower)</option>
+<option value="1080">Up to 1080p (larger/slower)</option>
 <option value="480">Up to 480p</option><option value="360">Up to 360p</option></select>
 <p class="eyebrow">YOUTUBE CONNECTION</p>
 <select name="client">
@@ -176,7 +177,7 @@ style="width:100%;padding:16px">
 </select>
 <button class="primary" type="submit">↓ Start download</button></form>
 {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
-<p class="small">If YouTube blocks the hosting server, changing the connection option may help, but it is not guaranteed.</p>
+<p class="small">This service runs on free hosting and may take about a minute to wake after inactivity. Fast mode depends on a community-operated relay and is not guaranteed for every video.</p>
 {% else %}
 <p class="eyebrow">DOWNLOAD STATUS</p>
 {% if job.status == 'ready' %}
@@ -193,7 +194,7 @@ style="width:100%;padding:16px">
 {% endif %}
 <p style="margin-top:30px"><a href="/direct" style="color:#baff82">← Start a new download</a>
 <span style="color:#6e8181"> · </span>
-<a href="/" style="color:#baff82">Standard interface</a></p>
+<a href="/classic" style="color:#baff82">Classic interface</a></p>
 </div>
 <footer class="footer"><span>Private access. No ads or third-party converters.</span></footer>
 </main></body></html>"""
@@ -315,6 +316,10 @@ def logout():
 
 @app.get("/")
 def home():
+    return redirect("/direct")
+
+@app.get("/classic")
+def classic():
     return render_template_string(HOME)
 
 @app.get("/api/health")
@@ -371,26 +376,138 @@ def relay_media_url(raw):
         raise ValueError("The relay provided an invalid media address.")
     return raw
 
-def open_relay_stream(url):
-    """Follow redirects only to the trusted relay operator's media hosts."""
-    url=relay_media_url(url)
+
+RELAY_CHUNK = 1024 * 1024
+RELAY_CONCURRENCY = 3
+RELAY_RETRIES = 4
+_client_local = threading.local()
+
+def relay_client():
+    # One pooled HTTPS session per worker thread; much less connection overhead.
+    client=getattr(_client_local,"client",None)
+    if client is None:
+        client=requests.Session()
+        client.headers.update({"User-Agent":"Mozilla/5.0 (compatible; Downwell/1.1)",
+                               "Accept-Encoding":"identity"})
+        _client_local.client=client
+    return client
+
+def verified_relay_url(url):
+    parsed=urlsplit(str(url))
+    host=(parsed.hostname or "").lower()
+    accepted=(host=="yt.chocolatemoo53.com" or
+              (host.endswith(".chocolatemoo53.com") and host.startswith("yt-comp")))
+    if parsed.scheme!="https" or not accepted or parsed.path!="/videoplayback" or \
+       parsed.username or parsed.password or parsed.port not in (None,443):
+        raise RuntimeError("The community relay redirected to an unapproved address.")
+    return url
+
+def open_relay_stream(url,byte_range=None):
+    """Follow redirect only inside trusted relay and companion media hosts."""
+    url=verified_relay_url(url)
+    headers={"Accept":"*/*"}
+    if byte_range is not None:
+        start,end=byte_range
+        headers["Range"]=f"bytes={start}-{end}"
     for _ in range(5):
-        response=requests.get(url,timeout=(8,35),allow_redirects=False,stream=True,
-                              headers={"User-Agent":"Mozilla/5.0 (compatible; Downwell/1.0)","Accept":"*/*"})
+        response=relay_client().get(url,headers=headers,timeout=(5,22),allow_redirects=False,stream=True)
         if response.status_code not in (301,302,303,307,308):
             return response
-        loc=response.headers.get("location","")
+        location=response.headers.get("location","")
         response.close()
-        target=urljoin(url,loc)
-        parsed=urlsplit(target)
-        host=(parsed.hostname or "").lower()
-        allowed=(host=="yt.chocolatemoo53.com" or
-                 (host.endswith(".chocolatemoo53.com") and host.startswith("yt-comp")))
-        if parsed.scheme!="https" or not allowed or parsed.username or parsed.password or parsed.port not in (None,443):
-            raise RuntimeError("Media relay redirected outside trusted hosts: "+host[:70])
-        app.logger.warning("Community relay media redirect to trusted host %s",host)
-        url=target
-    raise RuntimeError("Media relay redirected too many times.")
+        url=verified_relay_url(urljoin(url,location))
+    raise RuntimeError("The media relay redirected too many times.")
+
+def resolve_relay_url(raw):
+    """Cache a trusted companion link to avoid a redirect on every 1 MB request."""
+    url=relay_media_url(raw)
+    with relay_client().get(url,headers={"Range":"bytes=0-0"},timeout=(5,15),
+                            allow_redirects=False,stream=True) as response:
+        if response.status_code in (301,302,303,307,308):
+            return verified_relay_url(urljoin(url,response.headers.get("location","")))
+        if response.status_code in (200,206):
+            return url
+        raise RuntimeError("The media relay could not provide a download address (HTTP "
+                           +str(response.status_code)+").")
+
+def parallel_relay_download(key,folder,selections,combined_size):
+    """Validated HTTP ranges, 3 parallel connections, retries, and no partial chunks."""
+    if not combined_size or combined_size>RELAY_LIMIT:
+        raise RuntimeError("Video file size is unavailable or exceeds the 150 MB relay limit.")
+    jobs_to_fetch=[]
+    paths={}
+    fds={}
+    download_lock=threading.Lock()
+    downloaded=[0]
+    start_time=time.monotonic()
+    try:
+        for label,fmt in selections:
+            expected=int(fmt.get("clen") or 0)
+            if expected<=0 or expected>RELAY_LIMIT:
+                raise RuntimeError("Media stream does not expose a safe file size.")
+            url=resolve_relay_url(relay_media_url(fmt.get("url")))
+            dest=folder/(label+".source")
+            with dest.open("wb") as out:
+                out.truncate(expected)
+            fd=os.open(dest,os.O_WRONLY)
+            fds[label]=fd
+            paths[label]=dest
+            for begin in range(0,expected,RELAY_CHUNK):
+                end=min(begin+RELAY_CHUNK,expected)-1
+                jobs_to_fetch.append((label,url,begin,end,expected))
+        total_parts=len(jobs_to_fetch)
+        completed=[0]
+
+        def fetch_chunk(item):
+            label,url,begin,end,expected=item
+            need=end-begin+1
+            last_error="Unknown transfer failure"
+            for attempt in range(RELAY_RETRIES):
+                try:
+                    with open_relay_stream(url,(begin,end)) as remote:
+                        if remote.status_code!=206:
+                            raise RuntimeError("Relay doesn't support resumable requests (HTTP "
+                                               +str(remote.status_code)+").")
+                        content_range=remote.headers.get("content-range","").strip()
+                        match=re.fullmatch(r"bytes\s+(\d+)-(\d+)/(\d+)",content_range,re.I)
+                        if not match or tuple(int(x) for x in match.groups())!=(begin,end,expected):
+                            raise RuntimeError("Relay returned an incorrect byte range.")
+                        collected=bytearray()
+                        for packet in remote.iter_content(chunk_size=128*1024):
+                            if not packet:continue
+                            collected.extend(packet)
+                            if len(collected)>need:raise RuntimeError("Relay returned too many bytes.")
+                        if len(collected)!=need:
+                            raise RuntimeError(f"Relay stopped early ({len(collected)} of {need} bytes).")
+                    written=os.pwrite(fds[label],collected,begin)
+                    if written!=need:
+                        raise RuntimeError("Couldn't write the complete video segment.")
+                    with download_lock:
+                        downloaded[0]+=need
+                        completed[0]+=1
+                        elapsed=max(0.5,time.monotonic()-start_time)
+                        speed=(downloaded[0]/(1024*1024))/elapsed
+                        change(key,status="downloading",
+                          progress=min(94,round(3+downloaded[0]/combined_size*90,1)),
+                          message=f"Fast download · {downloaded[0]/(1024*1024):.1f}/{combined_size/(1024*1024):.1f} MB · {speed:.1f} MB/s ({completed[0]}/{total_parts} parts)")
+                    return
+                except (requests.RequestException,RuntimeError,OSError) as exc:
+                    last_error=str(exc)[:130]
+                    if attempt+1<RELAY_RETRIES:time.sleep(0.35*(attempt+1))
+            raise RuntimeError(f"Couldn't retrieve {label} segment {begin//RELAY_CHUNK+1} after {RELAY_RETRIES} attempts: {last_error}")
+        with ThreadPoolExecutor(max_workers=RELAY_CONCURRENCY,thread_name_prefix="range") as pool:
+            futures=[pool.submit(fetch_chunk,item) for item in jobs_to_fetch]
+            try:
+                for future in as_completed(futures):
+                    future.result()
+            except Exception:
+                for future in futures:future.cancel()
+                raise
+        return paths
+    finally:
+        for fd in fds.values():
+            os.close(fd)
+
 
 def relay_process(key,folder,video_id,kind,quality,title):
     """Use an explicitly selected open-source public Invidious relay."""
@@ -431,30 +548,7 @@ def relay_process(key,folder,video_id,kind,quality,title):
     except Exception: combined_size=0
     if combined_size and combined_size>RELAY_LIMIT:
         raise RuntimeError("This video is too large for the community relay. Choose a lower quality.")
-    paths={}
-    count=0
-    for label,fmt in selections:
-        media_url=relay_media_url(fmt.get("url"))
-        change(key,status="downloading",message="Downloading "+label+" through community relay...")
-        with open_relay_stream(media_url) as remote:
-            if remote.status_code!=200:
-                raise RuntimeError("Community relay refused "+label+" stream (HTTP "+str(remote.status_code)+").")
-            ct=remote.headers.get("content-type","").lower()
-            if "text/html" in ct or "application/json" in ct:
-                raise RuntimeError("Community relay returned a web page instead of media.")
-            dest=folder/(label+".source")
-            with dest.open("wb") as target:
-                for part in remote.iter_content(chunk_size=128*1024):
-                    if not part:continue
-                    count+=len(part)
-                    if count>RELAY_LIMIT:
-                        raise RuntimeError("File exceeds the community relay size limit.")
-                    target.write(part)
-                    if combined_size:
-                        change(key,progress=min(90,round(count/combined_size*90,1)))
-            if dest.stat().st_size<1024:
-                raise RuntimeError("Community relay returned an incomplete "+label+" stream.")
-            paths[label]=dest
+    paths=parallel_relay_download(key,folder,selections,combined_size)
     change(key,status="processing",progress=95,message="Converting and preparing your file...")
     if kind=="audio":
         dest=folder/"download.mp3"
@@ -464,11 +558,11 @@ def relay_process(key,folder,video_id,kind,quality,title):
         dest=folder/"download.mp4"
         args=["ffmpeg","-y","-loglevel","error","-i",str(paths["video"]),
               "-i",str(paths["audio"]),"-map","0:v:0","-map","1:a:0",
-              "-c:v","copy","-c:a","aac","-movflags","+faststart","-shortest",str(dest)]
+              "-c:v","copy","-c:a","copy","-movflags","+faststart","-shortest",str(dest)]
     subprocess.run(args,check=True,timeout=240,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
     if not dest.exists() or dest.stat().st_size<1024:
         raise RuntimeError("Conversion did not produce a file.")
-    safe=re.sub(r'[\\/:*?"<>|\x00-\x1f]',"_",title or data.get("title") or video_id).strip(" .")[:95] or video_id
+    safe=re.sub(r'[\\/:*?"<>|\x00-\x1f]',"_",data.get("title") or title or video_id).strip(" .")[:95] or video_id
     change(key,status="ready",progress=100,message="Ready to save!",
            path=str(dest),filename=safe+dest.suffix)
 
@@ -479,15 +573,10 @@ def worker(key,url,kind,quality,video_id,title,client,relay=False):
     try:
         folder.mkdir(parents=True,exist_ok=False)
         if relay:
-            try:
-                relay_process(key,folder,video_id,kind,quality,title)
-                return
-            except Exception as exc:
-                relay_problem=str(exc)[:180]
-                app.logger.warning('Community relay failed: %s',relay_problem)
-                for p in folder.iterdir():
-                    if p.is_file():p.unlink()
-                change(key,status='queued',progress=0,message='Trying direct YouTube connection...')
+            # Render's IP is already blocked by YouTube. Do not waste time retrying
+            # the broken direct route after a community-relay failure.
+            relay_process(key,folder,video_id,kind,quality,title)
+            return
         if kind=="audio":fmt="bestaudio/best"
         elif quality=="best":fmt="bv[ext=mp4]+ba[ext=m4a]/bv+ba/best"
         else:
@@ -521,8 +610,7 @@ def worker(key,url,kind,quality,video_id,title,client,relay=False):
     except Exception as e:
         msg=str(e)
         if youtube_blocked(msg):
-            msg=("Community relay failed: "+relay_problem+". YouTube also blocks this server." if relay_problem else
-                 "YouTube is refusing downloads from this cloud server. Enable the community relay option and try again.")
+            msg="YouTube blocks downloads from this server. Use the fast community relay option instead."
         change(key,status="error",message=msg[:220])
         shutil.rmtree(folder,ignore_errors=True)
     finally:slots.release()
@@ -565,31 +653,6 @@ def file(key):
 
 
 
-
-def probe_relay_ranges():
-    """Temporary diagnostic for interrupted community relay streams, no user data."""
-    try:
-        source=RELAY_ORIGIN+"/api/v1/videos/-NWJh_y-Y6w?local=true"
-        d=requests.get(source,timeout=(5,12)).json()
-        fmt=next(x for x in d.get("adaptiveFormats",[]) if str(x.get("itag"))=="137" and x.get("url","").startswith(RELAY_ORIGIN+"/videoplayback?"))
-        url=fmt["url"]
-        for begin in (0,3145728):
-            with requests.get(url,headers={"Range":f"bytes={begin}-{begin+524287}"},timeout=(6,16),stream=True,allow_redirects=False) as q:
-                app.logger.warning("RANGE_PROBE initial status=%s location=%s",q.status_code,str(q.headers.get("location"))[:100])
-                if q.status_code in (301,302,303,307,308):
-                    target=urljoin(url,q.headers.get("location",""))
-                    if urlsplit(target).hostname not in ("yt-comp1.chocolatemoo53.com","yt-comp2.chocolatemoo53.com","yt-comp3.chocolatemoo53.com","yt-comp4.chocolatemoo53.com","yt-comp5.chocolatemoo53.com","yt-comp6.chocolatemoo53.com"):continue
-                    with requests.get(target,headers={"Range":f"bytes={begin}-{begin+524287}"},timeout=(6,16),stream=True,allow_redirects=False) as media:
-                        app.logger.warning("RANGE_PROBE begin=%s status=%s content-range=%s length=%s accept-ranges=%s",
-                           begin,media.status_code,media.headers.get("content-range"),media.headers.get("content-length"),media.headers.get("accept-ranges"))
-                        try:
-                            chunk=next(media.iter_content(chunk_size=1024))
-                            app.logger.warning("RANGE_PROBE first bytes=%s",len(chunk))
-                        except Exception as e: app.logger.warning("RANGE_PROBE readfail %s",str(e)[:160])
-    except Exception as e:
-        app.logger.warning("RANGE_PROBE exception=%s %s",type(e).__name__,str(e)[:160])
-
-threading.Thread(target=probe_relay_ranges,daemon=True).start()
 
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=int(os.environ.get("PORT","10000")))
