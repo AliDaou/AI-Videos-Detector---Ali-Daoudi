@@ -181,7 +181,7 @@ style="width:100%;padding:16px">
 </select>
 <button class="primary" type="submit">↓ Start download</button></form>
 {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
-<p class="small">This service runs on free hosting and may take about a minute to wake after inactivity. Fast mode depends on a community-operated relay and is not guaranteed for every video.</p>
+<p class="small">Free hosting can take about a minute to wake. Downloads are faster for videos the community relay permits, but some YouTube videos are blocked by its upstream service. Changing your browser won't solve a relay HTTP 403.</p>
 {% else %}
 <p class="eyebrow">DOWNLOAD STATUS</p>
 {% if job.status == 'ready' %}
@@ -499,7 +499,8 @@ def parallel_relay_download(key,folder,selections,combined_size):
                     last_error=str(exc)[:130]
                     if attempt+1<RELAY_RETRIES:
                         if "HTTP 403" in str(exc):
-                            # Try another signed relay companion on 403.
+                            if attempt>=1:
+                                raise RuntimeError("This video is being blocked by the community relay (HTTP 403). Try another authorized source or backend.")
                             try:url=resolve_relay_url(origin_url)
                             except Exception:pass
                         time.sleep(0.6*(attempt+1))
@@ -625,7 +626,9 @@ def worker(key,url,kind,quality,video_id,title,client,relay=False):
     except Exception as e:
         msg=str(e)
         if youtube_blocked(msg):
-            msg="YouTube blocks downloads from this server. Use the fast community relay option instead."
+            msg="YouTube blocks direct downloads from this cloud server. The community relay is the only available backend."
+        elif "HTTP 403" in msg:
+            msg="The community relay rejected this video (HTTP 403). Some videos cannot be fetched through free public servers."
         change(key,status="error",message=msg[:220])
         shutil.rmtree(folder,ignore_errors=True)
     finally:slots.release()
@@ -670,28 +673,6 @@ def file(key):
 
 
 
-
-# Temporary low-bandwidth diagnostic: distinguish relay request count limits
-# from unsupported byte offsets on the problematic public video.
-def downwell_sequential_range_probe():
-    try:
-        api=RELAY_ORIGIN+"/api/v1/videos/7_IvsIYlHSg?local=true"
-        data=requests.get(api,timeout=(6,18)).json()
-        fmt=next(f for f in data["adaptiveFormats"] if str(f.get("itag"))=="134")
-        original=fmt["url"]
-        signed=resolve_relay_url(original)
-        for start in (0,1048576,2097152,3145728):
-            time.sleep(2.0)
-            with open_relay_stream(signed,(start,start+1023)) as r:
-                app.logger.warning("SERIAL_RANGE_TEST byte=%d HTTP=%d range=%s",
-                    start,r.status_code,r.headers.get("content-range"))
-                if r.status_code==206:
-                    payload=next(r.iter_content(chunk_size=1024))
-                    app.logger.warning("SERIAL_RANGE_TEST byte=%d got=%d bytes",start,len(payload))
-    except Exception as e:
-        app.logger.warning("SERIAL_RANGE_TEST_FAIL %s: %s",type(e).__name__,str(e)[:180])
-
-threading.Thread(target=downwell_sequential_range_probe,daemon=True).start()
 
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=int(os.environ.get("PORT","10000")))
