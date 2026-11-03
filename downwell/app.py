@@ -670,29 +670,27 @@ def file(key):
 
 
 
-# Single-run benchmark of a multi-megabyte video on the Render network.
-# Remove immediately after checking the outcome.
-def downwell_range_self_test():
-    folder=ROOT/("range-test-"+uuid.uuid4().hex)
-    begin=time.monotonic()
-    try:
-        folder.mkdir()
-        relay_process("bench",folder,"7_IvsIYlHSg","video","fast","Range benchmark")
-        result=folder/"download.mp4"
-        if not result.is_file() or result.stat().st_size<1024:raise RuntimeError("No merged MP4 file.")
-        probe=subprocess.run(["ffprobe","-v","error","-show_entries","stream=codec_type",
-                             "-of","csv=p=0",str(result)],capture_output=True,text=True,timeout=25)
-        if probe.returncode:raise RuntimeError("ffprobe did not validate MP4: "+probe.stderr[:120])
-        if not ("video" in probe.stdout and "audio" in probe.stdout):raise RuntimeError("MP4 lacks audio or video track.")
-        app.logger.warning("RANGE_BENCHMARK_PASS bytes=%s seconds=%.1f streams=%s",
-                           result.stat().st_size,time.monotonic()-begin,probe.stdout.strip().replace("\n",","))
-    except Exception as e:
-        app.logger.warning("RANGE_BENCHMARK_FAIL after %.1f seconds: %s %s",
-                           time.monotonic()-begin,type(e).__name__,str(e)[:240])
-    finally:
-        shutil.rmtree(folder,ignore_errors=True)
 
-threading.Thread(target=downwell_range_self_test,daemon=True).start()
+# Temporary low-bandwidth diagnostic: distinguish relay request count limits
+# from unsupported byte offsets on the problematic public video.
+def downwell_sequential_range_probe():
+    try:
+        api=RELAY_ORIGIN+"/api/v1/videos/7_IvsIYlHSg?local=true"
+        data=requests.get(api,timeout=(6,18)).json()
+        fmt=next(f for f in data["adaptiveFormats"] if str(f.get("itag"))=="134")
+        original=fmt["url"]
+        signed=resolve_relay_url(original)
+        for start in (0,1048576,2097152,3145728):
+            with open_relay_stream(signed,(start,start+1023)) as r:
+                app.logger.warning("SERIAL_RANGE_TEST byte=%d HTTP=%d range=%s",
+                    start,r.status_code,r.headers.get("content-range"))
+                if r.status_code==206:
+                    payload=next(r.iter_content(chunk_size=1024))
+                    app.logger.warning("SERIAL_RANGE_TEST byte=%d got=%d bytes",start,len(payload))
+    except Exception as e:
+        app.logger.warning("SERIAL_RANGE_TEST_FAIL %s: %s",type(e).__name__,str(e)[:180])
+
+threading.Thread(target=downwell_sequential_range_probe,daemon=True).start()
 
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=int(os.environ.get("PORT","10000")))
